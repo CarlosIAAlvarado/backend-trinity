@@ -1,0 +1,136 @@
+# ============================================
+# BACKEND .gitignore (Python/FastAPI)
+# ============================================
+
+# ============================================
+# ARCHIVOS SENSIBLES - NUNCA SUBIR
+# ============================================
+.env
+.env.local
+.env.production
+*.pem
+*.key
+credentials.json
+secrets/
+
+# ============================================
+# PYTHON - ENTORNOS VIRTUALES (PESADO)
+# ============================================
+# Estos son MUY PESADOS (100-500MB)
+# Render los instalará automáticamente con requirements.txt
+venv/
+env/
+ENV/
+.venv/
+virtualenv/
+pythonenv/
+
+# ============================================
+# PYTHON - ARCHIVOS COMPILADOS
+# ============================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# ============================================
+# PYTHON - DISTRIBUCIÓN (PESADO)
+# ============================================
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ============================================
+# TESTING
+# ============================================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+coverage.xml
+*.cover
+.cache
+nosetests.xml
+test-results/
+
+# ============================================
+# JUPYTER NOTEBOOK
+# ============================================
+.ipynb_checkpoints
+*.ipynb
+
+# ============================================
+# LOGS (PUEDEN SER PESADOS)
+# ============================================
+*.log
+logs/
+*.log.*
+
+# ============================================
+# BASE DE DATOS LOCAL (PESADO)
+# ============================================
+*.db
+*.sqlite
+*.sqlite3
+db.sqlite3
+mongodb_data/
+data/
+
+# ============================================
+# CACHÉ (PESADO)
+# ============================================
+.cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+
+# ============================================
+# IDEs Y EDITORES
+# ============================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# ============================================
+# SISTEMA OPERATIVO
+# ============================================
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ============================================
+# OTROS
+# ============================================
+*.tmp
+*.temp
+*.bak
+*.backup
+*.pid
+celerybeat-schedule
+celerybeat.pid
