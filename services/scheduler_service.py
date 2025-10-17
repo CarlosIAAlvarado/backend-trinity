@@ -7,6 +7,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from typing import Optional
 import asyncio
+from services.event_bus import event_bus
 
 logger = logging.getLogger(__name__)
 
@@ -162,7 +163,7 @@ class SchedulerService:
             logger.error(f"Error updating 24h timeframe: {e}")
 
     async def analyze_market_task(self):
-        """Analyze market sentiment and save to database (every 5 minutes)"""
+        """Analyze market sentiment and save to database (every 1 minute)"""
         if self.is_analyzing_market:
             logger.info("Market analysis already in progress, skipping...")
             return
@@ -182,6 +183,7 @@ class SchedulerService:
         finally:
             self.is_analyzing_market = False
 
+
     async def refresh_tier1_task(self):
         """Refresh TIER 1 tokens (TOP 10) every 5 seconds"""
         try:
@@ -190,7 +192,16 @@ class SchedulerService:
                 return
 
             result = await self.candlestick_service.refresh_tier1_candles()
-            logger.info(f"[TIER1] Updated {result.get('updated_count', 0)} candles")
+            updated_count = result.get('updated_count', 0)
+            logger.info(f"[TIER1] Updated {updated_count} candles")
+
+            # NUEVO: Emitir evento si hubo actualizaciones
+            if updated_count > 0:
+                await event_bus.emit_debounced('tier1_updated', {
+                    'tier': 1,
+                    'updated_count': updated_count,
+                    'timestamp': datetime.now().isoformat()
+                }, delay=5)
 
         except Exception as e:
             logger.error(f"[TIER1] Error refreshing candles: {e}")
@@ -203,7 +214,16 @@ class SchedulerService:
                 return
 
             result = await self.candlestick_service.refresh_tier2_candles()
-            logger.info(f"[TIER2] Updated {result.get('updated_count', 0)} candles")
+            updated_count = result.get('updated_count', 0)
+            logger.info(f"[TIER2] Updated {updated_count} candles")
+
+            # NUEVO: Emitir evento si hubo actualizaciones
+            if updated_count > 0:
+                await event_bus.emit_debounced('tier2_updated', {
+                    'tier': 2,
+                    'updated_count': updated_count,
+                    'timestamp': datetime.now().isoformat()
+                }, delay=5)
 
         except Exception as e:
             logger.error(f"[TIER2] Error refreshing candles: {e}")
@@ -314,10 +334,10 @@ class SchedulerService:
                 max_instances=1
             )
 
-            # Market analysis every 5 minutes
+            # Market analysis every 1 minute (changed from 5 for better sync with TIER updates)
             self.scheduler.add_job(
                 self.analyze_market_task,
-                IntervalTrigger(minutes=5),
+                IntervalTrigger(minutes=1),
                 id='analyze_market',
                 name='Analyze market sentiment',
                 replace_existing=True,
@@ -371,7 +391,7 @@ class SchedulerService:
             logger.info(f"Scheduler started - Token updates every {self.update_interval_hours} hours")
             logger.info("Scheduler started - Full candlestick updates every 24 hours")
             logger.info("Scheduler started - Timeframe updates: 15m, 30m, 1h, 12h, 24h")
-            logger.info("Scheduler started - Market analysis every 5 minutes")
+            logger.info("Scheduler started - Market analysis every 1 minute (UPSERT mode - always 2 records)")
             logger.info("Scheduler started - TIER 1 (TOP 10) updates every 5 seconds")
             logger.info("Scheduler started - TIER 2 (Market Cap > $5B) updates every 30 seconds")
             logger.info("Scheduler started - TIER 3 (Rest) updates every 60 seconds")

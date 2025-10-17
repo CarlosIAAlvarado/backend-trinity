@@ -281,6 +281,28 @@ class WebSocketService:
         except Exception as e:
             logger.error(f"Error emitting realtime_ticker_batch event: {e}")
 
+    async def emit_market_analysis_updated(self, analysis_data: Dict[str, Any]):
+        """
+        Emit event when market analysis is updated.
+        Notifies all connected clients to refresh market analysis display.
+
+        Args:
+            analysis_data: Dictionary with market analysis information
+        """
+        try:
+            # Convertir timestamps a string
+            payload = {
+                **analysis_data,
+                'timestamp': analysis_data['timestamp'].isoformat() if isinstance(analysis_data['timestamp'], datetime) else analysis_data['timestamp']
+            }
+
+            await self.sio.emit('market_analysis_updated', payload)
+
+            logger.info(f"[WEBSOCKET] Broadcasted market_analysis_updated: {analysis_data.get('market_status')} [{analysis_data.get('timeframe')}]")
+
+        except Exception as e:
+            logger.error(f"Error emitting market_analysis_updated event: {e}")
+
     def get_asgi_app(self):
         """Get the ASGI application for integration with FastAPI"""
         return self.sio

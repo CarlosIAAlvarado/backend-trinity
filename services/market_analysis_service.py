@@ -5,6 +5,7 @@ from collections import defaultdict
 from repositories.market_analysis_repository import MarketAnalysisRepository
 from repositories.candle_repository import CandleRepository
 from models.market_analysis_model import MarketAnalysisModel, MarketAnalysisResponse, MarketHistoryResponse, TopPerformer
+from services.event_bus import event_bus
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,31 @@ class MarketAnalysisService:
         self.market_repository = MarketAnalysisRepository()
         self.candle_repository = CandleRepository()
         self.available_timeframes = ['12h', '24h']
+        self._setup_event_listeners()
+
+    def _setup_event_listeners(self):
+        """
+        Configurar listeners para eventos del sistema
+        Market Analysis reacciona automáticamente cuando TIER 1 o TIER 2 se actualizan
+        """
+        # Escuchar eventos de TIER 1 y TIER 2
+        event_bus.on('tier1_updated', self._on_tier_updated)
+        event_bus.on('tier2_updated', self._on_tier_updated)
+        logger.info("[MARKET ANALYSIS] Event listeners registered for TIER updates")
+
+    async def _on_tier_updated(self, data: Dict[str, Any]):
+        """
+        Callback cuando TIER 1 o TIER 2 se actualizan
+        Dispara análisis automático con debounce para evitar múltiples ejecuciones
+        """
+        tier = data.get('tier')
+        updated_count = data.get('updated_count', 0)
+
+        logger.info(f"[MARKET ANALYSIS] EVENT RECEIVED: TIER {tier} updated ({updated_count} candles)")
+        logger.info("[MARKET ANALYSIS] Triggering automatic market analysis...")
+
+        # Ejecutar análisis automático (ya viene con debounce del event_bus)
+        await self.analyze_and_save()
 
     async def analyze_market(self, timeframe: str = '24h') -> MarketAnalysisModel:
         """
@@ -147,11 +173,12 @@ class MarketAnalysisService:
             )
 
             logger.info("=" * 70)
-            logger.info(f"MARKET ANALYSIS COMPLETED [{timeframe}]: {market_status}")
-            logger.info(f"Total Tokens: {total_tokens}")
-            logger.info(f"Bullish: {bullish_count} ({bullish_percentage:.2f}%)")
-            logger.info(f"Bearish: {bearish_count} ({bearish_percentage:.2f}%)")
-            logger.info(f"Neutral: {neutral_count} ({neutral_percentage:.2f}%)")
+            logger.info(f"[MARKET ANALYSIS] [{timeframe}] Status: {market_status}")
+            logger.info(f"[MARKET ANALYSIS] [{timeframe}] Total: {total_tokens} | Bullish: {bullish_count} ({bullish_percentage:.2f}%) | Bearish: {bearish_count} ({bearish_percentage:.2f}%) | Neutral: {neutral_count} ({neutral_percentage:.2f}%)")
+            if top_performers:
+                logger.info(f"[MARKET ANALYSIS] [{timeframe}] Top performer: {top_performers[0].symbol} ({top_performers[0].avg_performance:+.2f}%)")
+            if worst_performers:
+                logger.info(f"[MARKET ANALYSIS] [{timeframe}] Worst performer: {worst_performers[-1].symbol} ({worst_performers[-1].avg_performance:+.2f}%)")
             logger.info("=" * 70)
 
             return analysis
@@ -163,7 +190,8 @@ class MarketAnalysisService:
     async def analyze_and_save(self) -> Dict[str, Any]:
         """
         Analyze market for BOTH timeframes (12h and 24h) and save results to database
-        Called by scheduler every 5 minutes
+        Called by scheduler every 5 minutes OR by event listeners
+        Emits WebSocket notification to frontend after each analysis
         """
         try:
             results = []
@@ -179,6 +207,23 @@ class MarketAnalysisService:
                     'timeframe': timeframe,
                     'status': analysis.market_status
                 })
+
+                # NUEVO: Emit WebSocket event to notify frontend of update
+                try:
+                    from services.websocket_service import websocket_service
+                    await websocket_service.emit_market_analysis_updated({
+                        'market_status': analysis.market_status,
+                        'timeframe': timeframe,
+                        'total_tokens': analysis.total_tokens,
+                        'bullish_percentage': analysis.bullish_percentage,
+                        'bearish_percentage': analysis.bearish_percentage,
+                        'neutral_percentage': analysis.neutral_percentage,
+                        'timestamp': analysis.timestamp,
+                        'top_performers': [p.model_dump() for p in analysis.top_performers],
+                        'worst_performers': [p.model_dump() for p in analysis.worst_performers]
+                    })
+                except Exception as ws_error:
+                    logger.warning(f"Failed to emit WebSocket update for {timeframe}: {ws_error}")
 
             return {
                 'status': 'success',
@@ -237,40 +282,6 @@ class MarketAnalysisService:
                 data=None
             )
 
-    async def get_history(self, limit: int = 100, timeframe: str = None) -> MarketHistoryResponse:
-        """
-        Get historical market analysis records
-
-        Args:
-            limit: Maximum number of records to retrieve
-            timeframe: Filter by specific timeframe ('12h' or '24h'), or None for all
-        """
-        try:
-            history_data = await self.market_repository.get_history(limit, timeframe)
-
-            analyses = []
-            for data in history_data:
-                data.pop('_id', None)
-                data.pop('createdAt', None)
-                data.pop('updatedAt', None)
-                analyses.append(MarketAnalysisModel(**data))
-
-            timeframe_msg = f" for {timeframe}" if timeframe else ""
-            return MarketHistoryResponse(
-                status="success",
-                message=f"Retrieved {len(analyses)} historical records{timeframe_msg}",
-                count=len(analyses),
-                data=analyses
-            )
-
-        except Exception as e:
-            logger.error(f"Error getting market history: {e}")
-            return MarketHistoryResponse(
-                status="error",
-                message=str(e),
-                count=0,
-                data=[]
-            )
 
     def _create_empty_analysis(self, timeframe: str = '24h') -> MarketAnalysisModel:
         """

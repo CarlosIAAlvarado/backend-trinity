@@ -21,25 +21,55 @@ class MarketAnalysisRepository:
 
     async def insert_analysis(self, analysis_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Insert a new market analysis record
+        Insert or update market analysis record (UPSERT)
+
+        Uses upsert to ensure only ONE document per timeframe exists.
+        If document exists for the timeframe, it updates it.
+        If not, it creates a new one.
+
+        This prevents database accumulation and ensures fresh data.
         """
         try:
             collection = db_config.get_collection(self.collection_name)
 
-            analysis_data['createdAt'] = datetime.now()
-            analysis_data['updatedAt'] = datetime.now()
+            timeframe = analysis_data.get('timeframe')
+            if not timeframe:
+                raise ValueError("timeframe is required in analysis_data")
 
-            result = await collection.insert_one(analysis_data)
+            # Set timestamps
+            current_time = datetime.now()
+            analysis_data['updatedAt'] = current_time
 
-            logger.info(f"Inserted market analysis: {analysis_data['market_status']}")
+            # Check if document exists to determine if this is create or update
+            existing = await collection.find_one({'timeframe': timeframe})
+
+            if not existing:
+                # First time: set createdAt
+                analysis_data['createdAt'] = current_time
+                action = "created"
+            else:
+                # Update: preserve original createdAt
+                analysis_data['createdAt'] = existing.get('createdAt', current_time)
+                action = "updated"
+
+            # Upsert: update if exists, insert if not
+            result = await collection.update_one(
+                {'timeframe': timeframe},  # Filter by timeframe
+                {'$set': analysis_data},   # Update/set all fields
+                upsert=True                # Create if doesn't exist
+            )
+
+            logger.info(f"Market analysis {action} [{timeframe}]: {analysis_data['market_status']}")
 
             return {
-                'inserted_id': str(result.inserted_id),
-                'status': 'success'
+                'modified_count': result.modified_count,
+                'upserted_id': str(result.upserted_id) if result.upserted_id else None,
+                'status': 'success',
+                'action': action
             }
 
         except Exception as e:
-            logger.error(f"Error inserting market analysis: {e}")
+            logger.error(f"Error upserting market analysis: {e}")
             raise
 
     async def get_latest_analysis(self, timeframe: str = None) -> Optional[Dict[str, Any]]:
@@ -57,9 +87,11 @@ class MarketAnalysisRepository:
             if timeframe:
                 query['timeframe'] = timeframe
 
+            # FIXED: Sort by createdAt (insertion time) instead of timestamp (analysis time)
+            # This ensures we always get the most recently inserted record
             analysis = await collection.find_one(
                 query,
-                sort=[('timestamp', -1)]
+                sort=[('createdAt', -1)]
             )
 
             return analysis
@@ -68,86 +100,24 @@ class MarketAnalysisRepository:
             logger.error(f"Error getting latest market analysis: {e}")
             return None
 
-    async def get_history(self, limit: int = 100, timeframe: str = None) -> List[Dict[str, Any]]:
+    async def get_all_analyses(self) -> List[Dict[str, Any]]:
         """
-        Get historical market analysis records
+        Get all market analysis records (should only be 2: one for 12h, one for 24h)
 
-        Args:
-            limit: Maximum number of records to retrieve
-            timeframe: Filter by specific timeframe ('12h' or '24h'), or None for all
+        Returns:
+            List of all market analysis documents
         """
         try:
             collection = db_config.get_collection(self.collection_name)
 
-            # Build query filter
-            query = {}
-            if timeframe:
-                query['timeframe'] = timeframe
+            cursor = collection.find({})
+            analyses = await cursor.to_list(length=None)
 
-            cursor = collection.find(
-                query,
-                sort=[('timestamp', -1)],
-                limit=limit
-            )
-
-            history = await cursor.to_list(length=limit)
-
-            return history
+            return analyses
 
         except Exception as e:
-            logger.error(f"Error getting market analysis history: {e}")
+            logger.error(f"Error getting all market analyses: {e}")
             return []
-
-    async def get_history_by_date_range(
-        self,
-        start_date: datetime,
-        end_date: datetime
-    ) -> List[Dict[str, Any]]:
-        """
-        Get market analysis records within a date range
-        """
-        try:
-            collection = db_config.get_collection(self.collection_name)
-
-            cursor = collection.find(
-                {
-                    'timestamp': {
-                        '$gte': start_date,
-                        '$lte': end_date
-                    }
-                },
-                sort=[('timestamp', -1)]
-            )
-
-            history = await cursor.to_list(length=None)
-
-            return history
-
-        except Exception as e:
-            logger.error(f"Error getting market analysis by date range: {e}")
-            return []
-
-    async def delete_old_records(self, days_old: int = 30) -> int:
-        """
-        Delete market analysis records older than specified days
-        """
-        try:
-            collection = db_config.get_collection(self.collection_name)
-
-            cutoff_date = datetime.now() - timedelta(days=days_old)
-
-            result = await collection.delete_many({
-                'timestamp': {'$lt': cutoff_date}
-            })
-
-            deleted_count = result.deleted_count
-            logger.info(f"Deleted {deleted_count} old market analysis records (older than {days_old} days)")
-
-            return deleted_count
-
-        except Exception as e:
-            logger.error(f"Error deleting old market analysis records: {e}")
-            return 0
 
     async def count_records(self) -> int:
         """

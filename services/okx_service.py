@@ -120,7 +120,16 @@ class OKXService:
     ) -> Optional[Dict[str, Any]]:
         """
         Get the latest candlestick for a symbol and timeframe
-        Performance calculado como CoinMarketCap: ultimos X minutos COMPLETOS
+        Performance calculado como CoinMarketCap: ROLLING PERIOD
+        Compara PRECIO ACTUAL EN TIEMPO REAL vs precio hace EXACTAMENTE el periodo especificado
+
+        Metodología Rolling Period (igual a CoinMarketCap):
+        - Precio actual: Obtenido desde /api/v5/market/ticker (último precio negociado)
+        - 15m: precio actual vs precio hace exactamente 15 minutos (vela [1] close)
+        - 30m: precio actual vs precio hace exactamente 30 minutos (vela [1] close)
+        - 1h: precio actual vs precio hace exactamente 1 hora (vela [1] close)
+        - 12h: precio actual vs precio hace exactamente 12 horas (vela [12] close de 1h)
+        - 24h: precio actual vs precio hace exactamente 24 horas (vela [24] close de 1h)
 
         Args:
             symbol: Token symbol (e.g., "BTC", "ETH")
@@ -134,14 +143,53 @@ class OKXService:
                 instrument_id = self._build_instrument_id(symbol)
                 okx_timeframe = self._get_okx_timeframe(timeframe)
 
-                candles_needed = {
-                    '15m': 2,
-                    '30m': 3,
-                    '1H': 2,
-                    '12H': 2,
-                    '1D': 2
-                }
-                limit = candles_needed.get(okx_timeframe, 2)
+                # PASO 1: Obtener datos del ticker API (precio actual + datos 24h)
+                ticker_params = {'instId': instrument_id}
+                ticker_data = await self._make_request('/api/v5/market/ticker', ticker_params)
+
+                ticker_price = None
+                ticker_open24h = None
+                ticker_high24h = None
+                ticker_low24h = None
+
+                if not ticker_data or 'data' not in ticker_data or not ticker_data['data']:
+                    logger.warning(f"[TICKER] No ticker data for {symbol}, falling back to candlestick data")
+                else:
+                    ticker_info = ticker_data['data'][0]
+                    ticker_price = float(ticker_info['last'])
+
+                    # OKX Ticker incluye open24h, high24h, low24h para performance de 24h
+                    if 'open24h' in ticker_info and ticker_info['open24h']:
+                        ticker_open24h = float(ticker_info['open24h'])
+                    if 'high24h' in ticker_info and ticker_info['high24h']:
+                        ticker_high24h = float(ticker_info['high24h'])
+                    if 'low24h' in ticker_info and ticker_info['low24h']:
+                        ticker_low24h = float(ticker_info['low24h'])
+
+                    if timeframe in ['24h'] and ticker_open24h:
+                        logger.info(
+                            f"[TICKER] {symbol} 24h: last=${ticker_price:.2f}, "
+                            f"open24h=${ticker_open24h:.2f}, high24h=${ticker_high24h:.2f}, low24h=${ticker_low24h:.2f}"
+                        )
+
+                # PASO 2: Obtener velas históricas para calcular performance
+                # ROLLING PERIOD: Necesitamos velas para retroceder exactamente el periodo
+                # Para períodos largos (12h, 24h) usamos velas de 1 hora para mayor precisión
+                if timeframe in ['12h', '24h']:
+                    # Para períodos largos, usar velas de 1 hora
+                    okx_timeframe = '1H'
+                    if timeframe == '12h':
+                        limit = 13  # 13 velas de 1h = 12 horas atrás
+                    else:  # 24h
+                        limit = 26  # 26 velas para tener margen y calcular interpolación
+                else:
+                    # Para períodos cortos, usar el timeframe nativo
+                    candles_needed = {
+                        '15m': 2,   # Vela [1] = hace 15 minutos
+                        '30m': 2,   # Vela [1] = hace 30 minutos
+                        '1H': 2     # Vela [1] = hace 1 hora
+                    }
+                    limit = candles_needed.get(okx_timeframe, 2)
 
                 params = {
                     'instId': instrument_id,
@@ -157,38 +205,94 @@ class OKXService:
                 candles = data['data']
                 current_candle = candles[0]
 
+                # Log para debug: verificar cuántas velas obtuvimos
+                if timeframe in ['24h']:
+                    logger.info(f"[CANDLES] {symbol} {timeframe}: Obtenidas {len(candles)} velas de {okx_timeframe}")
+
                 timestamp_ms = int(current_candle[0])
                 open_timestamp = datetime.fromtimestamp(timestamp_ms / 1000)
 
+                # Calcular close_timestamp basado en el timeframe SOLICITADO
                 timeframe_minutes = {
-                    '15m': 15, '30m': 30, '1H': 60, '12H': 720, '1D': 1440
+                    '15m': 15, '30m': 30, '1h': 60, '12h': 720, '24h': 1440
                 }
-                minutes = timeframe_minutes.get(okx_timeframe, 15)
+                minutes = timeframe_minutes.get(timeframe, 15)
                 close_timestamp = open_timestamp + timedelta(minutes=minutes)
 
-                current_close = float(current_candle[4])
-                current_high = float(current_candle[2])
-                current_low = float(current_candle[3])
+                # PRECIO ACTUAL: Usar ticker price (tiempo real) si está disponible
+                current_close = ticker_price if ticker_price else float(current_candle[4])
 
-                price_from_period_ago = None
-                if timeframe == '15m' and len(candles) >= 2:
-                    price_from_period_ago = float(candles[1][4])
-                elif timeframe == '30m' and len(candles) >= 3:
-                    price_from_period_ago = float(candles[2][4])
-                elif timeframe == '1h' and len(candles) >= 2:
-                    price_from_period_ago = float(candles[1][4])
-                elif timeframe == '12h' and len(candles) >= 2:
-                    price_from_period_ago = float(candles[1][4])
-                elif timeframe == '24h' and len(candles) >= 2:
-                    price_from_period_ago = float(candles[1][4])
+                # Para 24h: Si tenemos datos del ticker, usar high24h y low24h de OKX
+                # Esto garantiza 100% coincidencia con la metodología de OKX
+                if timeframe == '24h' and ticker_high24h and ticker_low24h:
+                    current_high = ticker_high24h
+                    current_low = ticker_low24h
+                elif timeframe == '12h':
+                    # Para 12h, calcular de las velas
+                    all_highs = [float(c[2]) for c in candles]
+                    all_lows = [float(c[3]) for c in candles]
+                    current_high = max(all_highs)
+                    current_low = min(all_lows)
                 else:
-                    price_from_period_ago = float(current_candle[1])
+                    # Para períodos cortos, usar high/low de la vela actual
+                    current_high = float(current_candle[2])
+                    current_low = float(current_candle[3])
 
+                # ROLLING PERIOD CALCULATION (CoinMarketCap methodology)
+                # Obtenemos el precio de hace exactamente el periodo especificado
+                price_from_period_ago = None
+
+                if timeframe == '24h' and ticker_open24h:
+                    # ÓPTIMO: Para 24h, usar open24h del ticker de OKX
+                    # Esto es exactamente lo que OKX usa para calcular su % de 24h
+                    # Garantiza 100% coincidencia con OKX y CoinMarketCap
+                    price_from_period_ago = ticker_open24h
+
+                elif timeframe == '15m' and len(candles) >= 2:
+                    # Vela [1] close = precio hace exactamente 15 minutos
+                    price_from_period_ago = float(candles[1][4])
+
+                elif timeframe == '30m' and len(candles) >= 2:
+                    # Vela [1] close = precio hace exactamente 30 minutos
+                    price_from_period_ago = float(candles[1][4])
+
+                elif timeframe == '1h' and len(candles) >= 2:
+                    # Vela [1] close = precio hace exactamente 1 hora
+                    price_from_period_ago = float(candles[1][4])
+
+                elif timeframe == '12h' and len(candles) >= 13:
+                    # Usamos velas de 1h: vela [12] close = precio hace exactamente 12 horas
+                    price_from_period_ago = float(candles[12][4])
+
+                elif timeframe == '24h' and len(candles) >= 25:
+                    # Fallback para 24h si no tenemos ticker_open24h
+                    price_from_period_ago = float(candles[24][4])
+                    logger.warning(f"[24h] {symbol}: Using candle fallback, ticker_open24h not available")
+
+                else:
+                    # Fallback general: usar open de la vela actual
+                    price_from_period_ago = float(current_candle[1])
+                    logger.warning(f"Not enough candles for {symbol} {timeframe}, using fallback")
+
+                # IMPORTANTE: Para timeframes largos, el "open" debe ser el precio del inicio del período
+                # Para 24h: open = precio hace 24h (para mostrar el rango completo del período)
+                if timeframe in ['12h', '24h'] and price_from_period_ago:
+                    current_open = price_from_period_ago  # Open = inicio del período
+                else:
+                    current_open = float(current_candle[1])  # Open = open de la vela actual
+
+                # Cálculo de performance: (precio_actual - precio_hace_periodo) / precio_hace_periodo * 100
                 performance = ((current_close - price_from_period_ago) / price_from_period_ago) * 100 if price_from_period_ago != 0 else 0.0
 
-                # IMPORTANTE: 'open' debe ser el precio de apertura REAL de la vela actual,
-                # NO el price_from_period_ago que es solo para calcular el performance
-                current_open = float(current_candle[1])
+                # Log para debug
+                if timeframe in ['12h', '24h']:
+                    logger.info(
+                        f"[ROLLING PERIOD] {symbol} {timeframe}: "
+                        f"CLOSE=${current_close:.2f} ({'ticker' if ticker_price else 'candle'}), "
+                        f"OPEN(precio hace {timeframe})=${price_from_period_ago:.2f}, "
+                        f"HIGH=${current_high:.2f}, LOW=${current_low:.2f}, "
+                        f"PERFORMANCE={performance:.2f}%"
+                    )
 
                 candle = {
                     'symbol': symbol.upper(),

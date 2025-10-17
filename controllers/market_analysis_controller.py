@@ -32,13 +32,6 @@ class MarketAnalysisController:
             response_model=MarketAnalysisResponse,
             summary="Analyze market now and return results"
         )
-        self.router.add_api_route(
-            "/history",
-            self.get_history,
-            methods=["GET"],
-            response_model=MarketHistoryResponse,
-            summary="Get market analysis history"
-        )
 
     async def get_latest_analysis(
         self,
@@ -67,16 +60,16 @@ class MarketAnalysisController:
     ) -> MarketAnalysisResponse:
         """
         Analyze market immediately and return fresh results for specific timeframe
-        Saves to database to persist the analysis
+        Uses UPSERT to update the existing record (no accumulation)
         """
         try:
             logger.info(f"POST /api/market-analysis/analyze?timeframe={timeframe} - Generating fresh analysis")
             analysis = await self.service.analyze_market(timeframe)
 
-            # Save to database so it persists
+            # Save to database using UPSERT (updates existing record)
             analysis_dict = analysis.model_dump()
             await self.service.market_repository.insert_analysis(analysis_dict)
-            logger.info(f"Fresh analysis saved to database for {timeframe}")
+            logger.info(f"Fresh analysis upserted to database for {timeframe}")
 
             return MarketAnalysisResponse(
                 status="success",
@@ -90,29 +83,6 @@ class MarketAnalysisController:
                 status="error",
                 message=str(e),
                 data=None
-            )
-
-    async def get_history(
-        self,
-        limit: int = Query(default=100, ge=1, le=1000, description="Number of records to retrieve"),
-        timeframe: str = Query(default=None, description="Filter by timeframe: 12h or 24h (optional)")
-    ) -> MarketHistoryResponse:
-        """
-        Get historical market analysis records
-        Can optionally filter by timeframe
-        """
-        try:
-            logger.info(f"GET /api/market-analysis/history?limit={limit}&timeframe={timeframe} - Fetching records")
-            response = await self.service.get_history(limit, timeframe)
-            return response
-
-        except Exception as e:
-            logger.error(f"Error in get_history endpoint: {e}")
-            return MarketHistoryResponse(
-                status="error",
-                message=str(e),
-                count=0,
-                data=[]
             )
 
 market_analysis_controller = MarketAnalysisController()
