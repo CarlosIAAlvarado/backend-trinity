@@ -3,6 +3,7 @@ from typing import Dict, Any, List
 from datetime import datetime
 from collections import defaultdict
 from repositories.market_analysis_repository import MarketAnalysisRepository
+from repositories.secondary_market_analysis_repository import SecondaryMarketAnalysisRepository
 from repositories.candle_repository import CandleRepository
 from models.market_analysis_model import MarketAnalysisModel, MarketAnalysisResponse, MarketHistoryResponse, TopPerformer
 from services.event_bus import event_bus
@@ -13,10 +14,15 @@ class MarketAnalysisService:
     """
     Service for market analysis operations
     Analyzes market sentiment based on token performance
+
+    This service writes market analysis data to TWO databases:
+    1. Primary DB (trinity_market): Main operational database
+    2. Secondary DB (sample_mflix): Backup/replica database with retry logic
     """
 
     def __init__(self):
         self.market_repository = MarketAnalysisRepository()
+        self.secondary_market_repository = SecondaryMarketAnalysisRepository()
         self.candle_repository = CandleRepository()
         self.available_timeframes = ['12h', '24h']
         self._setup_event_listeners()
@@ -189,9 +195,13 @@ class MarketAnalysisService:
 
     async def analyze_and_save(self) -> Dict[str, Any]:
         """
-        Analyze market for BOTH timeframes (12h and 24h) and save results to database
+        Analyze market for BOTH timeframes (12h and 24h) and save results to BOTH databases
         Called by scheduler every 5 minutes OR by event listeners
         Emits WebSocket notification to frontend after each analysis
+
+        Database synchronization:
+        1. PRIMARY DB (trinity_market): Main database - MUST succeed
+        2. SECONDARY DB (sample_mflix): Replica database - Best effort with retry logic
         """
         try:
             results = []
@@ -200,15 +210,45 @@ class MarketAnalysisService:
             for timeframe in self.available_timeframes:
                 analysis = await self.analyze_market(timeframe)
                 analysis_dict = analysis.model_dump()
-                await self.market_repository.insert_analysis(analysis_dict)
 
-                logger.info(f"Market analysis saved [{timeframe}]: {analysis.market_status}")
+                # ==========================================
+                # SAVE TO PRIMARY DATABASE (CRITICAL)
+                # ==========================================
+                await self.market_repository.insert_analysis(analysis_dict)
+                logger.info(f"[PRIMARY DB] Market analysis saved [{timeframe}]: {analysis.market_status}")
+
+                # ==========================================
+                # SAVE TO SECONDARY DATABASE (BEST EFFORT)
+                # ==========================================
+                try:
+                    secondary_result = await self.secondary_market_repository.insert_analysis_with_retry(
+                        analysis_dict.copy()  # Copy to avoid mutations
+                    )
+                    if secondary_result.get('status') == 'success':
+                        logger.info(
+                            f"[SECONDARY DB] Market analysis synchronized [{timeframe}]: "
+                            f"{analysis.market_status} -> trinity_performance_marketAnalysis"
+                        )
+                    else:
+                        logger.warning(
+                            f"[SECONDARY DB] Failed to sync [{timeframe}]: "
+                            f"{secondary_result.get('message', 'Unknown error')}"
+                        )
+                except Exception as secondary_error:
+                    # Log error but don't fail the entire operation
+                    logger.error(
+                        f"[SECONDARY DB] Unexpected error saving to secondary database [{timeframe}]: "
+                        f"{secondary_error}"
+                    )
+
                 results.append({
                     'timeframe': timeframe,
                     'status': analysis.market_status
                 })
 
-                # NUEVO: Emit WebSocket event to notify frontend of update
+                # ==========================================
+                # EMIT WEBSOCKET EVENT
+                # ==========================================
                 try:
                     from services.websocket_service import websocket_service
                     await websocket_service.emit_market_analysis_updated({

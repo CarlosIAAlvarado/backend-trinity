@@ -11,7 +11,7 @@ from controllers.token_controller import TokenController
 from controllers.config_controller import ConfigController
 from controllers.candlestick_controller import candlestick_controller
 from controllers.market_analysis_controller import market_analysis_controller
-from config.database import db_config
+from config.database import db_config, secondary_db_config
 from services.scheduler_service import scheduler_service
 from services.websocket_service import websocket_service
 from services.okx_websocket_service import okx_websocket_service
@@ -37,9 +37,17 @@ async def lifespan(app: FastAPI):
     logger.info("="*70)
     logger.info("Starting application...")
 
-    # Connect to database
+    # Connect to PRIMARY database
     await db_config.connect()
-    logger.info("MongoDB: Connected successfully")
+    logger.info("MongoDB PRIMARY: Connected successfully (trinity_market)")
+
+    # Connect to SECONDARY database (for market analysis replication)
+    try:
+        await secondary_db_config.connect()
+        logger.info("MongoDB SECONDARY: Connected successfully (Dev)")
+    except Exception as e:
+        logger.warning(f"MongoDB SECONDARY: Connection failed - {e}")
+        logger.warning("Application will continue with PRIMARY database only")
 
     # Inject dependencies into OKX WebSocket service
     candle_repo = CandleRepository()
@@ -81,6 +89,7 @@ async def lifespan(app: FastAPI):
     await okx_websocket_service.stop()
     scheduler_service.stop()
     await db_config.disconnect()
+    await secondary_db_config.disconnect()
     logger.info("Application shut down successfully")
 
 # Create FastAPI application
