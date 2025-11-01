@@ -50,6 +50,12 @@ class NotificationController:
             methods=["DELETE"],
             summary="Delete notifications older than specified days"
         )
+        self.router.add_api_route(
+            "/test",
+            self.create_test_notification,
+            methods=["POST"],
+            summary="Create a test notification (for development/testing)"
+        )
 
     async def get_all_notifications(
         self,
@@ -190,6 +196,37 @@ class NotificationController:
                 "status": "error",
                 "message": str(e),
                 "deleted_count": 0
+            }
+
+    async def create_test_notification(self):
+        """
+        Create a test notification to verify the notification system works
+        This creates a sample "token_available" notification
+
+        Returns:
+            Created notification details
+        """
+        try:
+            logger.info("POST /api/notifications/test - Creating test notification")
+
+            # Create a test notification
+            notification = await self.service.create_token_available_notification(
+                symbol="TEST",
+                name="Test Token",
+                market_cap=1000000000
+            )
+
+            return {
+                "status": "success",
+                "message": "Test notification created successfully! Check your frontend.",
+                "notification": notification
+            }
+
+        except Exception as e:
+            logger.error(f"Error creating test notification: {e}")
+            return {
+                "status": "error",
+                "message": str(e)
             }
 
 # Create singleton instance

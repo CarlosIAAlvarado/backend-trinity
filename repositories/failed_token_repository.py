@@ -67,8 +67,10 @@ class FailedTokenRepository:
         try:
             if not failed_tokens:
                 logger.info("No failed tokens to upsert")
+                print("DEBUG: No failed tokens to upsert")
                 return 0
 
+            print(f"\n=== DEBUG: Starting upsert of {len(failed_tokens)} failed tokens ===")
             collection = db_config.get_collection(self.collection_name)
 
             # Add/update timestamps
@@ -77,6 +79,8 @@ class FailedTokenRepository:
 
             for token in failed_tokens:
                 token['updatedAt'] = now
+
+                print(f"Upserting token: {token['symbol']}")
 
                 # Upsert: update if exists, insert if not
                 result = await collection.update_one(
@@ -90,12 +94,15 @@ class FailedTokenRepository:
 
                 if result.upserted_id or result.modified_count > 0:
                     upserted_count += 1
+                    print(f"Success for {token['symbol']}: upserted_id={result.upserted_id}, modified={result.modified_count}")
 
             logger.info(f"Upserted {upserted_count} failed tokens into {self.collection_name}")
+            print(f"=== DEBUG: Completed upsert - {upserted_count} tokens saved to {self.collection_name} ===\n")
             return upserted_count
 
         except Exception as e:
             logger.error(f"Error upserting failed tokens: {e}")
+            print(f"ERROR upserting failed tokens: {e}")
             raise
 
     async def insert_many(self, failed_tokens: List[Dict[str, Any]]) -> int:

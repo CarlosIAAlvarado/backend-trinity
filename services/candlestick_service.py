@@ -28,25 +28,20 @@ class CandlestickService:
     async def update_all_candlesticks(self) -> Dict[str, Any]:
         """
         Update candlesticks for all Trinity tokens
-        FRESH UPDATE STRATEGY:
-        1. Delete ALL existing candlesticks AND failed tokens history
-        2. Fetch fresh data from OKX for all tokens
-        3. Insert new candlesticks in bulk
-        4. Record tokens that failed to retrieve data
-        This ensures 100% data consistency and historical tracking
+        INCREMENTAL UPDATE STRATEGY:
+        1. Fetch fresh data from OKX for all tokens
+        2. UPSERT candlesticks (update if exists, insert if new)
+        3. Update failed tokens intelligently (add new, remove now-available)
+        This avoids duplicates and preserves data integrity
         """
         try:
             logger.info("=" * 70)
-            logger.info("STARTING FRESH CANDLESTICK UPDATE")
+            logger.info("STARTING INCREMENTAL CANDLESTICK UPDATE")
             logger.info("=" * 70)
 
-            # STEP 1A: Delete ALL existing candlesticks
-            logger.info("STEP 1A: Deleting all existing candlesticks from database...")
-            deleted_count = await self.candle_repository.delete_all()
-            logger.info(f"Successfully deleted {deleted_count} old candlesticks")
-
-            # STEP 1B: NO borrar tokens fallidos - se actualizarán inteligentemente al final
-            logger.info("STEP 1B: Skipping failed tokens deletion - will update intelligently later...")
+            # STEP 1: Skip deletion - we'll use UPSERT instead
+            logger.info("STEP 1: Using UPSERT strategy - no deletion needed")
+            deleted_count = 0
 
             # STEP 2: Get all Trinity tokens
             logger.info("STEP 2: Fetching tokens from database...")
@@ -78,10 +73,16 @@ class CandlestickService:
             successful_symbols = set(candle['symbol'] for candle in all_candles)
             failed_tokens_data = []
 
+            print(f"\n=== DEBUG: Analyzing tokens ===")
+            print(f"Total tokens to check: {len(tokens)}")
+            print(f"Candlesticks retrieved: {len(all_candles)}")
+            print(f"Unique successful symbols: {len(successful_symbols)}")
+
             for token in tokens:
                 symbol = token.get('symbol')
                 if symbol and symbol not in successful_symbols:
                     # This token failed - no candlesticks retrieved
+                    print(f"FAILED TOKEN: {symbol} ({token.get('name')}) - adding to failed tokens list")
                     failed_tokens_data.append({
                         'symbol': symbol,
                         'name': token.get('name', symbol),
@@ -95,19 +96,22 @@ class CandlestickService:
 
             logger.info(f"Successful tokens: {len(successful_symbols)}")
             logger.info(f"Failed tokens: {len(failed_tokens_data)}")
+            print(f"Failed tokens count: {len(failed_tokens_data)}")
+            if failed_tokens_data:
+                print(f"Failed token symbols: {[t['symbol'] for t in failed_tokens_data]}")
 
             success_count = len(all_candles)
             expected_count = len(tokens) * len(self.timeframes)
             error_count = expected_count - success_count
 
-            # STEP 4A: Insert all new candles in bulk
-            logger.info("STEP 4A: Inserting new candlesticks into database...")
+            # STEP 4A: UPSERT all candles (update existing, insert new)
+            logger.info("STEP 4A: Upserting candlesticks into database...")
             if all_candles:
-                inserted_count = await self.candle_repository.insert_many(all_candles)
-                logger.info(f"Successfully inserted {inserted_count} new candlesticks")
+                upserted_count = await self.candle_repository.upsert_many(all_candles)
+                logger.info(f"Successfully upserted {upserted_count} candlesticks")
             else:
-                inserted_count = 0
-                logger.warning("No candlesticks to insert")
+                upserted_count = 0
+                logger.warning("No candlesticks to upsert")
 
             # STEP 4B: Update failed tokens intelligently
             logger.info("STEP 4B: Updating failed tokens table intelligently...")
@@ -122,8 +126,8 @@ class CandlestickService:
 
             logger.info("=" * 70)
             logger.info(
-                f"FRESH UPDATE COMPLETED: "
-                f"{inserted_count} candles inserted, "
+                f"INCREMENTAL UPDATE COMPLETED: "
+                f"{upserted_count} candles upserted, "
                 f"{len(successful_symbols)} tokens successful, "
                 f"{len(failed_tokens_data)} tokens failed"
             )
@@ -131,8 +135,8 @@ class CandlestickService:
 
             result = {
                 'status': 'success',
-                'message': f'Fresh update completed: {inserted_count} candlesticks, {len(failed_tokens_data)} failed tokens',
-                'updated_count': inserted_count,
+                'message': f'Incremental update completed: {upserted_count} candlesticks, {len(failed_tokens_data)} failed tokens',
+                'updated_count': upserted_count,
                 'deleted_count': deleted_count,
                 'error_count': error_count,
                 'total_tokens': len(tokens),
@@ -142,7 +146,7 @@ class CandlestickService:
 
             # Emit WebSocket event to notify all connected clients
             await websocket_service.emit_candlesticks_updated({
-                'updated_count': inserted_count,
+                'updated_count': upserted_count,
                 'deleted_count': deleted_count,
                 'timestamp': datetime.now().isoformat()
             })

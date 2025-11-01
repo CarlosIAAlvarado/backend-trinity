@@ -230,6 +230,66 @@ class CandleRepository:
             logger.error(f"Error deleting all candles: {e}")
             raise
 
+    async def upsert_many(self, candles: List[Dict[str, Any]]) -> int:
+        """
+        UPSERT multiple candles at once (update if exists, insert if new)
+        Uses symbol + timeframe as unique key
+        Returns count of upserted documents
+        """
+        try:
+            if not candles:
+                return 0
+
+            # Remove duplicates based on symbol + timeframe
+            print(f"\n=== DEBUG: upsert_many called with {len(candles)} candles ===")
+            unique_candles = {}
+            duplicates_found = 0
+
+            for candle in candles:
+                key = f"{candle['symbol']}_{candle['timeframe']}"
+                if key in unique_candles:
+                    duplicates_found += 1
+                    print(f"WARNING: Duplicate found and removed: {candle['symbol']} - {candle['timeframe']}")
+                else:
+                    unique_candles[key] = candle
+
+            candles_to_upsert = list(unique_candles.values())
+            print(f"After removing {duplicates_found} duplicates: {len(candles_to_upsert)} unique candles to upsert")
+
+            collection = db_config.get_collection(self.collection_name)
+            now = datetime.now()
+            upserted_count = 0
+
+            for candle in candles_to_upsert:
+                result = await collection.update_one(
+                    {
+                        'symbol': candle['symbol'],
+                        'timeframe': candle['timeframe']
+                    },
+                    {
+                        '$set': {
+                            **candle,
+                            'updatedAt': now
+                        },
+                        '$setOnInsert': {
+                            'createdAt': now
+                        }
+                    },
+                    upsert=True
+                )
+
+                if result.upserted_id or result.modified_count > 0:
+                    upserted_count += 1
+
+            logger.info(f"Upserted {upserted_count} candles")
+            print(f"=== DEBUG: Successfully upserted {upserted_count} candles ===\n")
+            return upserted_count
+
+        except Exception as e:
+            logger.error(f"Error upserting candles: {e}")
+            print(f"ERROR upserting candles: {e}")
+            raise
+
     async def insert_many(self, candles: List[Dict[str, Any]]) -> int:
         """
         Insert multiple candles at once (used after delete_all)
@@ -239,21 +299,39 @@ class CandleRepository:
             if not candles:
                 return 0
 
+            # Remove duplicates based on symbol + timeframe
+            print(f"\n=== DEBUG: insert_many called with {len(candles)} candles ===")
+            unique_candles = {}
+            duplicates_found = 0
+
+            for candle in candles:
+                key = f"{candle['symbol']}_{candle['timeframe']}"
+                if key in unique_candles:
+                    duplicates_found += 1
+                    print(f"WARNING: Duplicate found and removed: {candle['symbol']} - {candle['timeframe']}")
+                else:
+                    unique_candles[key] = candle
+
+            candles_to_insert = list(unique_candles.values())
+            print(f"After removing {duplicates_found} duplicates: {len(candles_to_insert)} unique candles to insert")
+
             collection = db_config.get_collection(self.collection_name)
 
             # Add timestamps
             now = datetime.now()
-            for candle in candles:
+            for candle in candles_to_insert:
                 candle['createdAt'] = now
                 candle['updatedAt'] = now
 
-            result = await collection.insert_many(candles)
+            result = await collection.insert_many(candles_to_insert)
             inserted_count = len(result.inserted_ids)
             logger.info(f"Inserted {inserted_count} new candles")
+            print(f"=== DEBUG: Successfully inserted {inserted_count} candles ===\n")
             return inserted_count
 
         except Exception as e:
             logger.error(f"Error inserting multiple candles: {e}")
+            print(f"ERROR inserting candles: {e}")
             raise
 
     async def update_price_snapshot(
