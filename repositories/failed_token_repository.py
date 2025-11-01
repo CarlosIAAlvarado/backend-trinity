@@ -28,6 +28,76 @@ class FailedTokenRepository:
             logger.error(f"Error deleting all failed tokens: {e}")
             raise
 
+    async def delete_by_symbols(self, symbols: List[str]) -> int:
+        """
+        Delete specific tokens by their symbols
+        Used to remove tokens that are now available in OKX
+
+        Args:
+            symbols: List of token symbols to delete
+
+        Returns:
+            Number of deleted documents
+        """
+        try:
+            if not symbols:
+                return 0
+
+            collection = db_config.get_collection(self.collection_name)
+            result = await collection.delete_many({
+                'symbol': {'$in': [s.upper() for s in symbols]}
+            })
+            logger.info(f"Deleted {result.deleted_count} tokens that are now available in OKX: {symbols}")
+            return result.deleted_count
+        except Exception as e:
+            logger.error(f"Error deleting tokens by symbols: {e}")
+            raise
+
+    async def upsert_many(self, failed_tokens: List[Dict[str, Any]]) -> int:
+        """
+        Insert or update multiple failed tokens
+        Uses symbol as unique key to avoid duplicates
+
+        Args:
+            failed_tokens: List of failed token documents
+
+        Returns:
+            Number of upserted documents
+        """
+        try:
+            if not failed_tokens:
+                logger.info("No failed tokens to upsert")
+                return 0
+
+            collection = db_config.get_collection(self.collection_name)
+
+            # Add/update timestamps
+            now = datetime.now()
+            upserted_count = 0
+
+            for token in failed_tokens:
+                token['updatedAt'] = now
+
+                # Upsert: update if exists, insert if not
+                result = await collection.update_one(
+                    {'symbol': token['symbol']},
+                    {
+                        '$set': token,
+                        '$setOnInsert': {'createdAt': now}
+                    },
+                    upsert=True
+                )
+
+                if result.upserted_id or result.modified_count > 0:
+                    upserted_count += 1
+
+            logger.info(f"Upserted {upserted_count} failed tokens into {self.collection_name}")
+            return upserted_count
+
+        except Exception as e:
+            logger.error(f"Error upserting failed tokens: {e}")
+            raise
+
     async def insert_many(self, failed_tokens: List[Dict[str, Any]]) -> int:
         """
         Insert multiple failed tokens at once

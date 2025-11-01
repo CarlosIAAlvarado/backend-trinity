@@ -69,6 +69,85 @@ class FailedTokenService:
                 'count': 0
             }
 
+    async def update_failed_tokens(
+        self,
+        successful_symbols: List[str],
+        failed_tokens_data: List[Dict[str, Any]],
+        all_tokens: List[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Update the failed tokens table intelligently:
+        1. Check which failed tokens are now successful
+        2. Create notifications for tokens that became available
+        3. Remove tokens that are now successful in OKX
+        4. Add/update tokens that failed
+
+        Args:
+            successful_symbols: List of symbols that successfully retrieved data from OKX
+            failed_tokens_data: List of tokens that failed to retrieve data
+            all_tokens: All tokens being processed (for notification data)
+
+        Returns:
+            Dict with statistics about the update
+        """
+        try:
+            # Step 1: Get previously failed tokens that are now successful
+            newly_available_tokens = []
+            if successful_symbols:
+                for symbol in successful_symbols:
+                    # Check if this token was previously in failed tokens table
+                    failed_token = await self.failed_token_repository.find_by_symbol(symbol)
+                    if failed_token:
+                        # This token was failed before but is now available!
+                        token_info = {
+                            'symbol': symbol,
+                            'name': failed_token.get('name', symbol),
+                            'market_cap': failed_token.get('market_cap')
+                        }
+                        newly_available_tokens.append(token_info)
+                        logger.info(f"🎉 Token {symbol} is now available in OKX!")
+
+            # Step 2: Create notifications for newly available tokens
+            notifications_created = 0
+            if newly_available_tokens:
+                from services.notification_service import notification_service
+                notifications_created = await notification_service.create_bulk_token_available_notifications(
+                    newly_available_tokens
+                )
+                logger.info(f"Created {notifications_created} notifications for newly available tokens")
+
+            # Step 3: Remove tokens that are now available in OKX
+            deleted_count = 0
+            if successful_symbols:
+                deleted_count = await self.failed_token_repository.delete_by_symbols(successful_symbols)
+                logger.info(f"Removed {deleted_count} tokens that are now available in OKX")
+
+            # Step 4: Add or update failed tokens
+            upserted_count = 0
+            if failed_tokens_data:
+                upserted_count = await self.failed_token_repository.upsert_many(failed_tokens_data)
+                logger.info(f"Upserted {upserted_count} failed tokens")
+
+            return {
+                'status': 'success',
+                'message': f'Updated failed tokens: {deleted_count} removed, {upserted_count} upserted, {notifications_created} notifications created',
+                'removed_count': deleted_count,
+                'upserted_count': upserted_count,
+                'notifications_created': notifications_created,
+                'newly_available_tokens': newly_available_tokens
+            }
+
+        except Exception as e:
+            logger.error(f"Error updating failed tokens: {e}")
+            return {
+                'status': 'error',
+                'message': str(e),
+                'removed_count': 0,
+                'upserted_count': 0,
+                'notifications_created': 0,
+                'newly_available_tokens': []
+            }
+
     async def get_all_failed_tokens(self, limit: int = 1000) -> FailedTokenResponse:
         """
         Get all tokens that failed in the last update

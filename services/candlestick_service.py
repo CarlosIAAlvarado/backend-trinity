@@ -45,10 +45,8 @@ class CandlestickService:
             deleted_count = await self.candle_repository.delete_all()
             logger.info(f"Successfully deleted {deleted_count} old candlesticks")
 
-            # STEP 1B: Delete ALL failed tokens history
-            logger.info("STEP 1B: Clearing failed tokens history...")
-            failed_deleted = await self.failed_token_service.clear_history()
-            logger.info(f"Successfully deleted {failed_deleted} old failed token records")
+            # STEP 1B: NO borrar tokens fallidos - se actualizarán inteligentemente al final
+            logger.info("STEP 1B: Skipping failed tokens deletion - will update intelligently later...")
 
             # STEP 2: Get all Trinity tokens
             logger.info("STEP 2: Fetching tokens from database...")
@@ -111,13 +109,16 @@ class CandlestickService:
                 inserted_count = 0
                 logger.warning("No candlesticks to insert")
 
-            # STEP 4B: Record failed tokens
-            logger.info("STEP 4B: Recording failed tokens into database...")
-            if failed_tokens_data:
-                failed_result = await self.failed_token_service.record_failed_tokens(failed_tokens_data)
-                logger.info(f"Recorded {failed_result['count']} failed tokens")
-            else:
-                logger.info("No failed tokens to record - all tokens successful!")
+            # STEP 4B: Update failed tokens intelligently
+            logger.info("STEP 4B: Updating failed tokens table intelligently...")
+            failed_result = await self.failed_token_service.update_failed_tokens(
+                successful_symbols=list(successful_symbols),
+                failed_tokens_data=failed_tokens_data
+            )
+            logger.info(
+                f"Failed tokens updated: {failed_result['removed_count']} removed (now in OKX), "
+                f"{failed_result['upserted_count']} added/updated (not in OKX)"
+            )
 
             logger.info("=" * 70)
             logger.info(

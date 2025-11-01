@@ -11,6 +11,7 @@ from controllers.token_controller import TokenController
 from controllers.config_controller import ConfigController
 from controllers.candlestick_controller import candlestick_controller
 from controllers.market_analysis_controller import market_analysis_controller
+from controllers.notification_controller import notification_controller
 from config.database import db_config, secondary_db_config
 from services.scheduler_service import scheduler_service
 from services.websocket_service import websocket_service
@@ -124,6 +125,7 @@ app.include_router(token_controller.router)
 app.include_router(config_controller.router)
 app.include_router(candlestick_controller.router)
 app.include_router(market_analysis_controller.router)
+app.include_router(notification_controller.router)
 
 # Health check endpoint
 @app.get("/health")
@@ -154,7 +156,8 @@ async def root():
             "tokens": "/api/tokens",
             "config": "/api/config",
             "candlesticks": "/api/candlesticks",
-            "market_analysis": "/api/market-analysis"
+            "market_analysis": "/api/market-analysis",
+            "notifications": "/api/notifications"
         }
     }
 

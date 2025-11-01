@@ -303,6 +303,36 @@ class WebSocketService:
         except Exception as e:
             logger.error(f"Error emitting market_analysis_updated event: {e}")
 
+    async def emit_new_notification(self, notification_data: Dict[str, Any]):
+        """
+        Emit event when a new notification is created.
+        Notifies all connected clients to display the notification.
+
+        Args:
+            notification_data: Dictionary with notification information
+                {
+                    'type': str,
+                    'title': str,
+                    'message': str,
+                    'symbol': str (optional),
+                    'data': dict (optional),
+                    'timestamp': datetime
+                }
+        """
+        try:
+            # Convert timestamps to string for JSON serialization
+            payload = {
+                **notification_data,
+                'timestamp': notification_data['timestamp'].isoformat() if isinstance(notification_data['timestamp'], datetime) else notification_data['timestamp']
+            }
+
+            await self.sio.emit('new_notification', payload)
+
+            logger.info(f"[WEBSOCKET] Broadcasted new_notification: {notification_data.get('type')} - {notification_data.get('title')}")
+
+        except Exception as e:
+            logger.error(f"Error emitting new_notification event: {e}")
+
     def get_asgi_app(self):
         """Get the ASGI application for integration with FastAPI"""
         return self.sio
