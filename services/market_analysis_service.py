@@ -199,14 +199,27 @@ class MarketAnalysisService:
 
             # Save to primary database (MongoDB accepts datetime objects)
             result = await self.market_repository.insert_analysis(analysis_dict)
-            logger.info("[PRIMARY DB] Market analysis saved")
+            GREEN = '\033[92m'
+            BOLD = '\033[1m'
+            RESET = '\033[0m'
+            logger.info(f"{GREEN}[PRIMARY DB] Market analysis saved{RESET}")
 
             # Save to secondary database with retry
             try:
-                await self.secondary_market_repository.insert_analysis_with_retry(analysis_dict)
-                logger.info("[SECONDARY DB] Market analysis synced")
+                result_secondary = await self.secondary_market_repository.insert_analysis_with_retry(analysis_dict)
+
+                # Check if the sync was successful
+                if result_secondary and result_secondary.get('status') == 'success':
+                    CYAN = '\033[96m'
+                    logger.info(f"{CYAN}{BOLD}[SECONDARY DB] ✓ Market analysis synced to cluster0.yru42a6.mongodb.net (Dev database){RESET}")
+                else:
+                    # Sync failed (e.g., quota exceeded, connection error)
+                    RED = '\033[91m'
+                    error_msg = result_secondary.get('message', 'Unknown error') if result_secondary else 'No response'
+                    logger.error(f"{RED}[SECONDARY DB] ✗ Failed to sync: {error_msg}{RESET}")
             except Exception as secondary_error:
-                logger.error(f"[SECONDARY DB] Failed to sync: {secondary_error}")
+                RED = '\033[91m'
+                logger.error(f"{RED}[SECONDARY DB] ✗ Exception during sync: {secondary_error}{RESET}")
                 # Don't raise error, primary is already saved
 
             # Serialize datetime objects to strings for JSON response

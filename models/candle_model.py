@@ -11,7 +11,7 @@ class CandleModel(BaseModel):
 
     symbol: str = Field(..., description="Token symbol (uppercase)")
     name: str = Field(default="", description="Token name (e.g., Bitcoin, Ethereum)")
-    timeframe: str = Field(..., description="Timeframe: 15m, 30m, 1h, 12h, 24h")
+    timeframe: str = Field(..., description="Timeframe: 15m, 30m, 1h, 12h, 1d")
     open: float = Field(..., description="Opening price")
     high: float = Field(..., description="Highest price")
     low: float = Field(..., description="Lowest price")

@@ -29,14 +29,14 @@ class OKXWebSocketService:
         self.websocket_service = None
 
         self.tokens = []
-        self.timeframes = ['15m', '30m', '1h', '12h', '24h']
+        self.timeframes = ['15m', '30m', '1h', '12h', '1d']
 
         self.timeframe_map = {
             '15m': 'candle15m',
             '30m': 'candle30m',
             '1h': 'candle1H',
             '12h': 'candle12H',
-            '24h': 'candle1D'
+            '1d': 'candle1D'
         }
 
         self.subscriptions_count = 0

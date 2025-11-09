@@ -149,18 +149,18 @@ class SchedulerService:
         except Exception as e:
             logger.error(f"Error updating 12h timeframe: {e}")
 
-    async def update_24h_timeframe_task(self):
-        """Update 24-hour candlesticks"""
+    async def update_1d_timeframe_task(self):
+        """Update 1-day candlesticks"""
         try:
             if not self.candlestick_service:
                 logger.error("Candlestick service not injected")
                 return
 
-            result = await self.candlestick_service.update_specific_timeframe('24h')
-            logger.info(f"24h update: {result['message']}")
+            result = await self.candlestick_service.update_specific_timeframe('1d')
+            logger.info(f"1d update: {result['message']}")
 
         except Exception as e:
-            logger.error(f"Error updating 24h timeframe: {e}")
+            logger.error(f"Error updating 1d timeframe: {e}")
 
     async def analyze_market_task(self):
         """Analyze market sentiment and save to database (every 1 minute)"""
@@ -324,12 +324,12 @@ class SchedulerService:
                 max_instances=1
             )
 
-            # 24-hour updates
+            # 1-day updates
             self.scheduler.add_job(
-                self.update_24h_timeframe_task,
+                self.update_1d_timeframe_task,
                 IntervalTrigger(hours=24),
-                id='update_24h',
-                name='Update 24h candlesticks',
+                id='update_1d',
+                name='Update 1d candlesticks',
                 replace_existing=True,
                 max_instances=1
             )
@@ -390,7 +390,7 @@ class SchedulerService:
             self.scheduler.start()
             logger.info(f"Scheduler started - Token updates every {self.update_interval_hours} hours")
             logger.info("Scheduler started - Full candlestick updates every 24 hours")
-            logger.info("Scheduler started - Timeframe updates: 15m, 30m, 1h, 12h, 24h")
+            logger.info("Scheduler started - Timeframe updates: 15m, 30m, 1h, 12h, 1d")
             logger.info("Scheduler started - Market analysis every 1 minute (UPSERT mode - always 2 records)")
             logger.info("Scheduler started - TIER 1 (TOP 10) updates every 5 seconds")
             logger.info("Scheduler started - TIER 2 (Market Cap > $5B) updates every 30 seconds")

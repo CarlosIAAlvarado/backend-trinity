@@ -131,11 +131,11 @@ class OKXService:
         - 30m: precio actual vs precio hace exactamente 30 minutos (vela [1] close)
         - 1h: precio actual vs precio hace exactamente 1 hora (vela [1] close)
         - 12h: precio actual vs precio hace exactamente 12 horas (vela [12] close de 1h)
-        - 24h: precio actual vs precio hace exactamente 24 horas (vela [24] close de 1h)
+        - 1d: precio actual vs precio hace exactamente 1 día (vela [24] close de 1h)
 
         Args:
             symbol: Token symbol (e.g., "BTC", "ETH")
-            timeframe: Timeframe (15m, 30m, 1h, 12h, 24h)
+            timeframe: Timeframe (15m, 30m, 1h, 12h, 1d)
 
         Returns:
             Dict with candle data or None if error
@@ -145,7 +145,7 @@ class OKXService:
                 instrument_id = self._build_instrument_id(symbol)
                 okx_timeframe = self._get_okx_timeframe(timeframe)
 
-                # PASO 1: Obtener datos del ticker API (precio actual + datos 24h)
+                # PASO 1: Obtener datos del ticker API (precio actual + datos 1d)
                 ticker_params = {'instId': instrument_id}
                 ticker_data = await self._make_request('/api/v5/market/ticker', ticker_params)
 
@@ -160,7 +160,7 @@ class OKXService:
                     ticker_info = ticker_data['data'][0]
                     ticker_price = float(ticker_info['last'])
 
-                    # OKX Ticker incluye open24h, high24h, low24h para performance de 24h
+                    # OKX Ticker incluye open24h, high24h, low24h para performance de 1d
                     if 'open24h' in ticker_info and ticker_info['open24h']:
                         ticker_open24h = float(ticker_info['open24h'])
                     if 'high24h' in ticker_info and ticker_info['high24h']:
@@ -168,21 +168,21 @@ class OKXService:
                     if 'low24h' in ticker_info and ticker_info['low24h']:
                         ticker_low24h = float(ticker_info['low24h'])
 
-                    if timeframe in ['24h'] and ticker_open24h:
+                    if timeframe == '1d' and ticker_open24h:
                         logger.info(
-                            f"[TICKER] {symbol} 24h: last=${ticker_price:.2f}, "
+                            f"[TICKER] {symbol} 1d: last=${ticker_price:.2f}, "
                             f"open24h=${ticker_open24h:.2f}, high24h=${ticker_high24h:.2f}, low24h=${ticker_low24h:.2f}"
                         )
 
                 # PASO 2: Obtener velas históricas para calcular performance
                 # ROLLING PERIOD: Necesitamos velas para retroceder exactamente el periodo
-                # Para períodos largos (12h, 24h) usamos velas de 1 hora para mayor precisión
-                if timeframe in ['12h', '24h']:
+                # Para períodos largos (12h, 1d) usamos velas de 1 hora para mayor precisión
+                if timeframe in ['12h', '1d']:
                     # Para períodos largos, usar velas de 1 hora
                     okx_timeframe = '1H'
                     if timeframe == '12h':
                         limit = 13  # 13 velas de 1h = 12 horas atrás
-                    else:  # 24h
+                    else:  # 1d
                         limit = 26  # 26 velas para tener margen y calcular interpolación
                 else:
                     # Para períodos cortos, usar el timeframe nativo
@@ -208,7 +208,7 @@ class OKXService:
                 current_candle = candles[0]
 
                 # Log para debug: verificar cuántas velas obtuvimos
-                if timeframe in ['24h']:
+                if timeframe == '1d':
                     logger.info(f"[CANDLES] {symbol} {timeframe}: Obtenidas {len(candles)} velas de {okx_timeframe}")
 
                 timestamp_ms = int(current_candle[0])
@@ -216,7 +216,7 @@ class OKXService:
 
                 # Calcular close_timestamp basado en el timeframe SOLICITADO
                 timeframe_minutes = {
-                    '15m': 15, '30m': 30, '1h': 60, '12h': 720, '24h': 1440
+                    '15m': 15, '30m': 30, '1h': 60, '12h': 720, '1d': 1440
                 }
                 minutes = timeframe_minutes.get(timeframe, 15)
                 close_timestamp = open_timestamp + timedelta(minutes=minutes)
@@ -224,9 +224,9 @@ class OKXService:
                 # PRECIO ACTUAL: Usar ticker price (tiempo real) si está disponible
                 current_close = ticker_price if ticker_price else float(current_candle[4])
 
-                # Para 24h: Si tenemos datos del ticker, usar high24h y low24h de OKX
+                # Para 1d: Si tenemos datos del ticker, usar high24h y low24h de OKX
                 # Esto garantiza 100% coincidencia con la metodología de OKX
-                if timeframe == '24h' and ticker_high24h and ticker_low24h:
+                if timeframe == '1d' and ticker_high24h and ticker_low24h:
                     current_high = ticker_high24h
                     current_low = ticker_low24h
                 elif timeframe == '12h':
@@ -244,9 +244,9 @@ class OKXService:
                 # Obtenemos el precio de hace exactamente el periodo especificado
                 price_from_period_ago = None
 
-                if timeframe == '24h' and ticker_open24h:
-                    # ÓPTIMO: Para 24h, usar open24h del ticker de OKX
-                    # Esto es exactamente lo que OKX usa para calcular su % de 24h
+                if timeframe == '1d' and ticker_open24h:
+                    # ÓPTIMO: Para 1d, usar open24h del ticker de OKX
+                    # Esto es exactamente lo que OKX usa para calcular su % de 1d
                     # Garantiza 100% coincidencia con OKX y CoinMarketCap
                     price_from_period_ago = ticker_open24h
 
@@ -266,10 +266,10 @@ class OKXService:
                     # Usamos velas de 1h: vela [12] close = precio hace exactamente 12 horas
                     price_from_period_ago = float(candles[12][4])
 
-                elif timeframe == '24h' and len(candles) >= 25:
-                    # Fallback para 24h si no tenemos ticker_open24h
+                elif timeframe == '1d' and len(candles) >= 25:
+                    # Fallback para 1d si no tenemos ticker_open24h
                     price_from_period_ago = float(candles[24][4])
-                    logger.warning(f"[24h] {symbol}: Using candle fallback, ticker_open24h not available")
+                    logger.warning(f"[1d] {symbol}: Using candle fallback, ticker_open24h not available")
 
                 else:
                     # Fallback general: usar open de la vela actual
@@ -277,8 +277,8 @@ class OKXService:
                     logger.warning(f"Not enough candles for {symbol} {timeframe}, using fallback")
 
                 # IMPORTANTE: Para timeframes largos, el "open" debe ser el precio del inicio del período
-                # Para 24h: open = precio hace 24h (para mostrar el rango completo del período)
-                if timeframe in ['12h', '24h'] and price_from_period_ago:
+                # Para 1d: open = precio hace 1 día (para mostrar el rango completo del período)
+                if timeframe in ['12h', '1d'] and price_from_period_ago:
                     current_open = price_from_period_ago  # Open = inicio del período
                 else:
                     current_open = float(current_candle[1])  # Open = open de la vela actual
@@ -287,7 +287,7 @@ class OKXService:
                 performance = ((current_close - price_from_period_ago) / price_from_period_ago) * 100 if price_from_period_ago != 0 else 0.0
 
                 # Log para debug
-                if timeframe in ['12h', '24h']:
+                if timeframe in ['12h', '1d']:
                     logger.info(
                         f"[ROLLING PERIOD] {symbol} {timeframe}: "
                         f"CLOSE=${current_close:.2f} ({'ticker' if ticker_price else 'candle'}), "
@@ -327,7 +327,7 @@ class OKXService:
 
         Args:
             symbol: Token symbol
-            timeframes: List of timeframes ['15m', '30m', '1h', '12h', '24h']
+            timeframes: List of timeframes ['15m', '30m', '1h', '12h', '1d']
             name: Token name (e.g., 'Bitcoin')
 
         Returns:

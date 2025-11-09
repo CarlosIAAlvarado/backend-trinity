@@ -106,23 +106,23 @@ class CandleRepository:
 
     async def find_all_ordered_by_performance(self, limit: int = 1000) -> List[Dict[str, Any]]:
         """
-        Get all candles ordered by 24h performance (descending)
-        Groups all timeframes by symbol, ordered by their 24h performance
+        Get all candles ordered by 1d performance (descending)
+        Groups all timeframes by symbol, ordered by their 1d performance
         """
         try:
             collection = db_config.get_collection(self.collection_name)
 
-            # Step 1: Get all 24h candles ordered by performance DESC
-            candles_24h = await collection.find(
-                {'timeframe': '24h'}
+            # Step 1: Get all 1d candles ordered by performance DESC
+            candles_1d = await collection.find(
+                {'timeframe': '1d'}
             ).sort('performance', -1).to_list(length=limit)
 
             # Step 2: For each symbol in order, get all its timeframes
             result = []
             symbols_processed = set()
 
-            for candle_24h in candles_24h:
-                symbol = candle_24h['symbol']
+            for candle_1d in candles_1d:
+                symbol = candle_1d['symbol']
 
                 if symbol in symbols_processed:
                     continue
@@ -134,8 +134,8 @@ class CandleRepository:
                     {'symbol': symbol}
                 ).sort([('timeframe', 1)]).to_list(length=10)
 
-                # Sort timeframes in specific order: 15m, 30m, 1h, 12h, 24h
-                timeframe_order = {'15m': 1, '30m': 2, '1h': 3, '12h': 4, '24h': 5}
+                # Sort timeframes in specific order: 15m, 30m, 1h, 4h, 12h, 1d
+                timeframe_order = {'15m': 1, '30m': 2, '1h': 3, '4h': 4, '12h': 5, '1d': 6}
                 symbol_candles.sort(key=lambda x: timeframe_order.get(x['timeframe'], 999))
 
                 result.extend(symbol_candles)
@@ -143,7 +143,7 @@ class CandleRepository:
                 if len(result) >= limit:
                     break
 
-            logger.info(f"Found {len(result)} candles ordered by 24h performance")
+            logger.info(f"Found {len(result)} candles ordered by 1d performance")
             return result[:limit]
 
         except Exception as e:
