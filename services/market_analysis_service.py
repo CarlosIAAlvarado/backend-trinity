@@ -218,5 +218,35 @@ class MarketAnalysisService:
             logger.error(f"Error saving market analysis: {e}")
             raise
 
+    async def analyze_and_save(self) -> Dict[str, Any]:
+        """
+        Analyze all timeframes and save to both databases
+        This is the main method called by the scheduler
+        """
+        try:
+            logger.info("=" * 70)
+            logger.info("[MARKET ANALYSIS] Starting analyze_and_save...")
+            logger.info("=" * 70)
+
+            # Analyze all 6 timeframes
+            analysis = await self.analyze_all_timeframes()
+
+            # Save to both databases
+            result = await self.save_analysis(analysis)
+
+            logger.info("=" * 70)
+            logger.info("[MARKET ANALYSIS] analyze_and_save completed successfully")
+            logger.info("=" * 70)
+
+            return {
+                "success": True,
+                "message": "Market analysis completed and saved to both databases",
+                "data": result
+            }
+
+        except Exception as e:
+            logger.error(f"[MARKET ANALYSIS] Error in analyze_and_save: {e}")
+            raise
+
 # Singleton instance
 market_analysis_service = MarketAnalysisService()
