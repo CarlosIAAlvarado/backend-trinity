@@ -1,348 +1,222 @@
 import logging
+import json
 from typing import Dict, Any, List
 from datetime import datetime
-from collections import defaultdict
 from repositories.market_analysis_repository import MarketAnalysisRepository
 from repositories.secondary_market_analysis_repository import SecondaryMarketAnalysisRepository
 from repositories.candle_repository import CandleRepository
-from models.market_analysis_model import MarketAnalysisModel, MarketAnalysisResponse, MarketHistoryResponse, TopPerformer
-from services.event_bus import event_bus
+from models.market_analysis_model import (
+    MarketAnalysisModel,
+    CandlesByTimeframe,
+    TimeframeAnalysis,
+    TopPerformer
+)
 
 logger = logging.getLogger(__name__)
 
 class MarketAnalysisService:
     """
-    Service for market analysis operations
-    Analyzes market sentiment based on token performance
-
-    This service writes market analysis data to TWO databases:
-    1. Primary DB (trinity_market): Main operational database
-    2. Secondary DB (sample_mflix): Backup/replica database with retry logic
+    Market Analysis Service
+    Generates nested structure with all timeframes in a single document
     """
 
     def __init__(self):
         self.market_repository = MarketAnalysisRepository()
         self.secondary_market_repository = SecondaryMarketAnalysisRepository()
         self.candle_repository = CandleRepository()
-        self.available_timeframes = ['12h', '24h']
-        self._setup_event_listeners()
+        self.available_timeframes = ['15m', '30m', '1h', '4h', '12h', '1d']
 
-    def _setup_event_listeners(self):
+    async def analyze_all_timeframes(self) -> MarketAnalysisModel:
         """
-        Configurar listeners para eventos del sistema
-        Market Analysis reacciona automáticamente cuando TIER 1 o TIER 2 se actualizan
-        """
-        # Escuchar eventos de TIER 1 y TIER 2
-        event_bus.on('tier1_updated', self._on_tier_updated)
-        event_bus.on('tier2_updated', self._on_tier_updated)
-        logger.info("[MARKET ANALYSIS] Event listeners registered for TIER updates")
-
-    async def _on_tier_updated(self, data: Dict[str, Any]):
-        """
-        Callback cuando TIER 1 o TIER 2 se actualizan
-        Dispara análisis automático con debounce para evitar múltiples ejecuciones
-        """
-        tier = data.get('tier')
-        updated_count = data.get('updated_count', 0)
-
-        logger.info(f"[MARKET ANALYSIS] EVENT RECEIVED: TIER {tier} updated ({updated_count} candles)")
-        logger.info("[MARKET ANALYSIS] Triggering automatic market analysis...")
-
-        # Ejecutar análisis automático (ya viene con debounce del event_bus)
-        await self.analyze_and_save()
-
-    async def analyze_market(self, timeframe: str = '24h') -> MarketAnalysisModel:
-        """
-        Analyze market sentiment based on a specific timeframe (12h or 24h)
-        Returns market status: ALCISTA, BAJISTA, or NEUTRAL
-
-        Args:
-            timeframe: '12h' or '24h' (default: '24h')
+        Analyze all timeframes and generate nested structure
+        Returns a single document with all timeframe analyses
         """
         try:
-            # Validate timeframe
-            if timeframe not in self.available_timeframes:
-                logger.warning(f"Invalid timeframe '{timeframe}', using default '24h'")
-                timeframe = '24h'
-
             logger.info("=" * 70)
-            logger.info(f"STARTING MARKET ANALYSIS - TIMEFRAME: {timeframe}")
+            logger.info("[MARKET ANALYSIS NEW] Starting analysis for ALL timeframes")
             logger.info("=" * 70)
 
-            collection = self.candle_repository.collection
+            # Dictionary to hold analysis for each timeframe
+            timeframe_analyses = {}
+            total_bullish = 0
+            total_bearish = 0
+            total_count = 0
 
-            # Get candles for the specific timeframe only
-            candles = await collection.find({
-                'timeframe': timeframe
-            }).to_list(length=None)
+            # Analyze each timeframe
+            for timeframe in self.available_timeframes:
+                logger.info(f"[MARKET ANALYSIS] Analyzing {timeframe}...")
 
-            logger.info(f"Retrieved {len(candles)} candles for {timeframe} timeframe")
+                # Get candles for this timeframe
+                candles = await self.candle_repository.find_by_timeframe(timeframe)
 
-            token_data = []
-            bullish_count = 0
-            bearish_count = 0
-            neutral_count = 0
+                if not candles or len(candles) == 0:
+                    logger.warning(f"No candles found for {timeframe}, skipping...")
+                    timeframe_analyses[timeframe] = TimeframeAnalysis(best=[], worst=[])
+                    continue
 
-            for candle in candles:
-                symbol = candle.get('symbol')
-                performance = candle.get('performance', 0)
-                name = candle.get('name', symbol)
+                # Collect token data
+                token_data = []
+                bullish = 0
+                bearish = 0
 
-                token_data.append({
-                    'symbol': symbol,
-                    'name': name,
-                    'performance': round(performance, 2)
-                })
+                for candle in candles:
+                    performance = candle.get('performance', 0)
+                    token_data.append({
+                        'symbol': candle['symbol'],
+                        'name': candle.get('name', candle['symbol']),
+                        'performance': round(performance, 2)
+                    })
 
-                if performance > 0:
-                    bullish_count += 1
-                elif performance < 0:
-                    bearish_count += 1
+                    if performance > 0:
+                        bullish += 1
+                    elif performance < 0:
+                        bearish += 1
+
+                # Sort by performance
+                token_data.sort(key=lambda x: x['performance'], reverse=True)
+
+                # Get best and worst performers
+                best_performers = [
+                    TopPerformer(
+                        symbol=t['symbol'],
+                        name=t['name'],
+                        avg_performance=t['performance']
+                    )
+                    for t in token_data[:10]  # Top 10
+                ]
+
+                worst_performers = [
+                    TopPerformer(
+                        symbol=t['symbol'],
+                        name=t['name'],
+                        avg_performance=t['performance']
+                    )
+                    for t in token_data[-10:]  # Worst 10
+                ]
+
+                # Create TimeframeAnalysis
+                timeframe_analyses[timeframe] = TimeframeAnalysis(
+                    best=best_performers,
+                    worst=worst_performers
+                )
+
+                # Accumulate for overall direction
+                total_bullish += bullish
+                total_bearish += bearish
+                total_count += len(candles)
+
+                logger.info(f"[{timeframe}] Bullish: {bullish}, Bearish: {bearish}, Total: {len(candles)}")
+
+            # Calculate overall market direction
+            # Thresholds:
+            # - LONG (ALCISTA): >= 60% bullish
+            # - SHORT (BAJISTA): <= 40% bullish
+            # - FLAT (LATERAL): between 40% and 60%
+
+            if total_count > 0:
+                bullish_percentage = (total_bullish / total_count) * 100
+                bearish_percentage = (total_bearish / total_count) * 100
+
+                # Determine market direction based on thresholds
+                if bullish_percentage >= 60:
+                    direction = "LONG"
+                    direction_number = 1
+                elif bullish_percentage <= 40:
+                    direction = "SHORT"
+                    direction_number = 0
                 else:
-                    neutral_count += 1
+                    direction = "FLAT"
+                    direction_number = 0.5  # Flat is between 0 and 1
 
-            total_tokens = len(token_data)
-
-            if total_tokens == 0:
-                logger.warning(f"No tokens found for {timeframe} analysis")
-                return self._create_empty_analysis(timeframe)
-
-            bullish_percentage = (bullish_count / total_tokens) * 100
-            bearish_percentage = (bearish_count / total_tokens) * 100
-            neutral_percentage = (neutral_count / total_tokens) * 100
-
-            if bullish_percentage >= 60:
-                market_status = "ALCISTA"
-            elif bearish_percentage >= 60:
-                market_status = "BAJISTA"
+                direction_number_real = bullish_percentage / 100
             else:
-                market_status = "NEUTRAL"
+                direction = "FLAT"
+                direction_number = 0.5
+                direction_number_real = 0.5
+                bullish_percentage = 0
 
-            # Sort by performance
-            token_data.sort(key=lambda x: x['performance'], reverse=True)
+            logger.info(f"[OVERALL] Direction: {direction} ({bullish_percentage:.2f}% bullish, Threshold: 60%+ = LONG, 40%- = SHORT)")
 
-            # Adjust performers based on market status
-            if market_status == "ALCISTA":
-                # Show top 10 best performers
-                top_performers = [
-                    TopPerformer(
-                        symbol=t['symbol'],
-                        name=t['name'],
-                        avg_performance=t['performance']
-                    )
-                    for t in token_data[:10]
-                ]
-                worst_performers = []
-            elif market_status == "BAJISTA":
-                # Show top 10 worst performers
-                top_performers = []
-                worst_performers = [
-                    TopPerformer(
-                        symbol=t['symbol'],
-                        name=t['name'],
-                        avg_performance=t['performance']
-                    )
-                    for t in token_data[-10:]
-                ]
-            else:  # NEUTRAL
-                # Show top 5 best and top 5 worst
-                top_performers = [
-                    TopPerformer(
-                        symbol=t['symbol'],
-                        name=t['name'],
-                        avg_performance=t['performance']
-                    )
-                    for t in token_data[:5]
-                ]
-                worst_performers = [
-                    TopPerformer(
-                        symbol=t['symbol'],
-                        name=t['name'],
-                        avg_performance=t['performance']
-                    )
-                    for t in token_data[-5:]
-                ]
+            # Create CandlesByTimeframe object
+            candles_by_timeframe = CandlesByTimeframe(
+                timeframe_15m=timeframe_analyses.get('15m'),
+                timeframe_30m=timeframe_analyses.get('30m'),
+                timeframe_1h=timeframe_analyses.get('1h'),
+                timeframe_4h=timeframe_analyses.get('4h'),
+                timeframe_12h=timeframe_analyses.get('12h'),
+                timeframe_1d=timeframe_analyses.get('1d')
+            )
 
+            # Create final analysis model
             analysis = MarketAnalysisModel(
-                market_status=market_status,
-                timeframe=timeframe,
-                total_tokens=total_tokens,
-                bullish_tokens=bullish_count,
-                bearish_tokens=bearish_count,
-                neutral_tokens=neutral_count,
-                bullish_percentage=round(bullish_percentage, 2),
-                bearish_percentage=round(bearish_percentage, 2),
-                neutral_percentage=round(neutral_percentage, 2),
-                timestamp=datetime.now(),
-                top_performers=top_performers,
-                worst_performers=worst_performers
+                direction=direction,
+                directionNumber=direction_number,
+                directionNumberReal=round(direction_number_real, 4),
+                candlesByTimeframe=candles_by_timeframe,
+                timestamp=datetime.now()
             )
 
             logger.info("=" * 70)
-            logger.info(f"[MARKET ANALYSIS] [{timeframe}] Status: {market_status}")
-            logger.info(f"[MARKET ANALYSIS] [{timeframe}] Total: {total_tokens} | Bullish: {bullish_count} ({bullish_percentage:.2f}%) | Bearish: {bearish_count} ({bearish_percentage:.2f}%) | Neutral: {neutral_count} ({neutral_percentage:.2f}%)")
-            if top_performers:
-                logger.info(f"[MARKET ANALYSIS] [{timeframe}] Top performer: {top_performers[0].symbol} ({top_performers[0].avg_performance:+.2f}%)")
-            if worst_performers:
-                logger.info(f"[MARKET ANALYSIS] [{timeframe}] Worst performer: {worst_performers[-1].symbol} ({worst_performers[-1].avg_performance:+.2f}%)")
+            logger.info(f"[MARKET ANALYSIS NEW] Analysis completed: {direction}")
             logger.info("=" * 70)
 
             return analysis
 
         except Exception as e:
-            logger.error(f"Error analyzing market for {timeframe}: {e}")
+            logger.error(f"Error analyzing all timeframes: {e}")
             raise
 
-    async def analyze_and_save(self) -> Dict[str, Any]:
+    def _serialize_for_json(self, obj: Any) -> Any:
         """
-        Analyze market for BOTH timeframes (12h and 24h) and save results to BOTH databases
-        Called by scheduler every 5 minutes OR by event listeners
-        Emits WebSocket notification to frontend after each analysis
+        Recursively serialize datetime and ObjectId objects for JSON
+        """
+        from bson import ObjectId
 
-        Database synchronization:
-        1. PRIMARY DB (trinity_market): Main database - MUST succeed
-        2. SECONDARY DB (sample_mflix): Replica database - Best effort with retry logic
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        elif isinstance(obj, ObjectId):
+            return str(obj)
+        elif isinstance(obj, dict):
+            # Remove _id field if present (MongoDB internal field)
+            return {
+                key: self._serialize_for_json(value)
+                for key, value in obj.items()
+                if key != '_id'
+            }
+        elif isinstance(obj, list):
+            return [self._serialize_for_json(item) for item in obj]
+        else:
+            return obj
+
+    async def save_analysis(self, analysis: MarketAnalysisModel) -> Dict[str, Any]:
+        """
+        Save analysis to BOTH databases (primary and secondary)
+        Returns the analysis dict WITHOUT MongoDB's _id field, fully JSON serializable
         """
         try:
-            results = []
+            # Convert to dict using model_dump with by_alias=True to use aliases
+            analysis_dict = analysis.model_dump(by_alias=True, mode='json')
 
-            # Analyze and save for each timeframe
-            for timeframe in self.available_timeframes:
-                analysis = await self.analyze_market(timeframe)
-                analysis_dict = analysis.model_dump()
+            # Save to primary database (MongoDB accepts datetime objects)
+            result = await self.market_repository.insert_analysis(analysis_dict)
+            logger.info("[PRIMARY DB] Market analysis saved")
 
-                # ==========================================
-                # SAVE TO PRIMARY DATABASE (CRITICAL)
-                # ==========================================
-                await self.market_repository.insert_analysis(analysis_dict)
-                logger.info(f"[PRIMARY DB] Market analysis saved [{timeframe}]: {analysis.market_status}")
+            # Save to secondary database with retry
+            try:
+                await self.secondary_market_repository.insert_analysis_with_retry(analysis_dict)
+                logger.info("[SECONDARY DB] Market analysis synced")
+            except Exception as secondary_error:
+                logger.error(f"[SECONDARY DB] Failed to sync: {secondary_error}")
+                # Don't raise error, primary is already saved
 
-                # ==========================================
-                # SAVE TO SECONDARY DATABASE (BEST EFFORT)
-                # ==========================================
-                try:
-                    secondary_result = await self.secondary_market_repository.insert_analysis_with_retry(
-                        analysis_dict.copy()  # Copy to avoid mutations
-                    )
-                    if secondary_result.get('status') == 'success':
-                        logger.info(
-                            f"[SECONDARY DB] Market analysis synchronized [{timeframe}]: "
-                            f"{analysis.market_status} -> trinity_performance_marketAnalysis"
-                        )
-                    else:
-                        logger.warning(
-                            f"[SECONDARY DB] Failed to sync [{timeframe}]: "
-                            f"{secondary_result.get('message', 'Unknown error')}"
-                        )
-                except Exception as secondary_error:
-                    # Log error but don't fail the entire operation
-                    logger.error(
-                        f"[SECONDARY DB] Unexpected error saving to secondary database [{timeframe}]: "
-                        f"{secondary_error}"
-                    )
+            # Serialize datetime objects to strings for JSON response
+            json_safe_dict = self._serialize_for_json(analysis_dict)
 
-                results.append({
-                    'timeframe': timeframe,
-                    'status': analysis.market_status
-                })
-
-                # ==========================================
-                # EMIT WEBSOCKET EVENT
-                # ==========================================
-                try:
-                    from services.websocket_service import websocket_service
-                    await websocket_service.emit_market_analysis_updated({
-                        'market_status': analysis.market_status,
-                        'timeframe': timeframe,
-                        'total_tokens': analysis.total_tokens,
-                        'bullish_percentage': analysis.bullish_percentage,
-                        'bearish_percentage': analysis.bearish_percentage,
-                        'neutral_percentage': analysis.neutral_percentage,
-                        'timestamp': analysis.timestamp,
-                        'top_performers': [p.model_dump() for p in analysis.top_performers],
-                        'worst_performers': [p.model_dump() for p in analysis.worst_performers]
-                    })
-                except Exception as ws_error:
-                    logger.warning(f"Failed to emit WebSocket update for {timeframe}: {ws_error}")
-
-            return {
-                'status': 'success',
-                'message': f'Market analysis completed for {len(results)} timeframes',
-                'data': results
-            }
+            return json_safe_dict
 
         except Exception as e:
-            logger.error(f"Error in analyze_and_save: {e}")
-            return {
-                'status': 'error',
-                'message': str(e)
-            }
+            logger.error(f"Error saving market analysis: {e}")
+            raise
 
-    async def get_latest_analysis(self, timeframe: str = '24h') -> MarketAnalysisResponse:
-        """
-        Get the most recent market analysis from database for specific timeframe
-
-        Args:
-            timeframe: '12h' or '24h' (default: '24h')
-        """
-        try:
-            # Validate timeframe
-            if timeframe not in self.available_timeframes:
-                logger.warning(f"Invalid timeframe '{timeframe}', using default '24h'")
-                timeframe = '24h'
-
-            analysis_data = await self.market_repository.get_latest_analysis(timeframe)
-
-            if not analysis_data:
-                # Generate fresh analysis if no data exists
-                analysis = await self.analyze_market(timeframe)
-                return MarketAnalysisResponse(
-                    status="success",
-                    message=f"No historical data for {timeframe}, generated fresh analysis",
-                    data=analysis
-                )
-
-            analysis_data.pop('_id', None)
-            analysis_data.pop('createdAt', None)
-            analysis_data.pop('updatedAt', None)
-
-            analysis = MarketAnalysisModel(**analysis_data)
-
-            return MarketAnalysisResponse(
-                status="success",
-                message=f"Latest market analysis retrieved for {timeframe}",
-                data=analysis
-            )
-
-        except Exception as e:
-            logger.error(f"Error getting latest analysis for {timeframe}: {e}")
-            return MarketAnalysisResponse(
-                status="error",
-                message=str(e),
-                data=None
-            )
-
-
-    def _create_empty_analysis(self, timeframe: str = '24h') -> MarketAnalysisModel:
-        """
-        Create an empty analysis when no data is available
-
-        Args:
-            timeframe: The timeframe for this empty analysis
-        """
-        return MarketAnalysisModel(
-            market_status="NEUTRAL",
-            timeframe=timeframe,
-            total_tokens=0,
-            bullish_tokens=0,
-            bearish_tokens=0,
-            neutral_tokens=0,
-            bullish_percentage=0.0,
-            bearish_percentage=0.0,
-            neutral_percentage=0.0,
-            timestamp=datetime.now(),
-            top_performers=[],
-            worst_performers=[]
-        )
-
+# Singleton instance
 market_analysis_service = MarketAnalysisService()

@@ -23,7 +23,7 @@ class CandlestickService:
         self.token_repository = TokenRepository()
         self.okx_service = OKXService()
         self.failed_token_service = FailedTokenService()
-        self.timeframes = ['15m', '30m', '1h', '12h', '24h']
+        self.timeframes = ['15m', '30m', '1h', '4h', '12h', '1d']  # Actualizado con 4h y 1d
 
     async def update_all_candlesticks(self) -> Dict[str, Any]:
         """

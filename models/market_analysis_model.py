@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field, ConfigDict
 
 class TopPerformer(BaseModel):
@@ -8,10 +8,43 @@ class TopPerformer(BaseModel):
     name: str
     avg_performance: float
 
+class TimeframeAnalysis(BaseModel):
+    """Analysis data for a specific timeframe"""
+    model_config = ConfigDict(populate_by_name=True)
+
+    best: List[TopPerformer] = Field(default=[], description="Best performing tokens")
+    worst: List[TopPerformer] = Field(default=[], description="Worst performing tokens")
+
+class CandlesByTimeframe(BaseModel):
+    """Container for all timeframe analyses"""
+    model_config = ConfigDict(populate_by_name=True)
+
+    timeframe_15m: Optional[TimeframeAnalysis] = Field(default=None, alias="15m")
+    timeframe_30m: Optional[TimeframeAnalysis] = Field(default=None, alias="30m")
+    timeframe_1h: Optional[TimeframeAnalysis] = Field(default=None, alias="1H")
+    timeframe_4h: Optional[TimeframeAnalysis] = Field(default=None, alias="4H")
+    timeframe_12h: Optional[TimeframeAnalysis] = Field(default=None, alias="12H")
+    timeframe_1d: Optional[TimeframeAnalysis] = Field(default=None, alias="1D")
+
 class MarketAnalysisModel(BaseModel):
     """
-    Market Analysis model representing overall market sentiment
-    Based on analysis of a specific timeframe (12h or 24h)
+    NEW Market Analysis model with nested timeframe structure
+    Contains analysis for multiple timeframes in a single document
+    """
+    model_config = ConfigDict(populate_by_name=True)
+
+    direction: str = Field(..., description="SHORT, FLAT, or LONG")
+    directionNumber: float = Field(..., description="0 for SHORT, 0.5 for FLAT, 1 for LONG")
+    directionNumberReal: float = Field(..., description="Real direction number with decimals")
+    candlesByTimeframe: CandlesByTimeframe = Field(..., description="Analysis grouped by timeframes")
+    timestamp: datetime = Field(default_factory=datetime.now, description="Analysis timestamp")
+
+# ===== OLD MODELS (keep for backward compatibility) =====
+
+class MarketAnalysisModelOld(BaseModel):
+    """
+    OLD Market Analysis model (DEPRECATED)
+    Kept for backward compatibility
     """
     model_config = ConfigDict(populate_by_name=True)
 
@@ -32,9 +65,16 @@ class MarketAnalysisResponse(BaseModel):
     """Response model for market analysis endpoints"""
     model_config = ConfigDict(populate_by_name=True)
 
+    success: bool
+    data: Optional[Dict[str, Any]] = None
+
+class MarketAnalysisResponseOld(BaseModel):
+    """OLD Response model (DEPRECATED)"""
+    model_config = ConfigDict(populate_by_name=True)
+
     status: str
     message: str
-    data: Optional[MarketAnalysisModel] = None
+    data: Optional[MarketAnalysisModelOld] = None
     timestamp: datetime = Field(default_factory=datetime.now)
 
 class MarketHistoryResponse(BaseModel):

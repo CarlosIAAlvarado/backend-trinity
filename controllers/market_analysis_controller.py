@@ -1,14 +1,14 @@
-from fastapi import APIRouter, Query
-from typing import Optional
+from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 import logging
 from services.market_analysis_service import market_analysis_service
-from models.market_analysis_model import MarketAnalysisResponse, MarketHistoryResponse
 
 logger = logging.getLogger(__name__)
 
 class MarketAnalysisController:
     """
     REST API Controller for market analysis operations
+    NEW VERSION: Returns analysis for ALL timeframes in a single document
     """
 
     def __init__(self):
@@ -19,70 +19,62 @@ class MarketAnalysisController:
     def _setup_routes(self):
         """Setup API routes"""
         self.router.add_api_route(
-            "/latest",
-            self.get_latest_analysis,
-            methods=["GET"],
-            response_model=MarketAnalysisResponse,
-            summary="Get latest market analysis"
-        )
-        self.router.add_api_route(
             "/analyze",
             self.analyze_now,
             methods=["POST"],
-            response_model=MarketAnalysisResponse,
-            summary="Analyze market now and return results"
+            summary="Analyze all timeframes and return nested structure"
         )
 
-    async def get_latest_analysis(
-        self,
-        timeframe: str = Query(default='24h', description="Timeframe: 12h or 24h")
-    ) -> MarketAnalysisResponse:
+    async def analyze_now(self):
         """
-        Get the most recent market analysis from database for specific timeframe
-        If no data exists, generates fresh analysis
-        """
-        try:
-            logger.info(f"GET /api/market-analysis/latest?timeframe={timeframe} - Fetching latest analysis")
-            response = await self.service.get_latest_analysis(timeframe)
-            return response
+        Analyze ALL timeframes and return nested structure
+        Returns a single document with all timeframe analyses
 
-        except Exception as e:
-            logger.error(f"Error in get_latest_analysis endpoint: {e}")
-            return MarketAnalysisResponse(
-                status="error",
-                message=str(e),
-                data=None
-            )
-
-    async def analyze_now(
-        self,
-        timeframe: str = Query(default='24h', description="Timeframe: 12h or 24h")
-    ) -> MarketAnalysisResponse:
-        """
-        Analyze market immediately and return fresh results for specific timeframe
-        Uses UPSERT to update the existing record (no accumulation)
+        Response structure:
+        {
+            "success": true,
+            "data": {
+                "direction": "SHORT" | "LONG",
+                "directionNumber": 0 | 1,
+                "directionNumberReal": 0.0-1.0,
+                "candlesByTimeframe": {
+                    "15m": {"best": [...], "worst": [...]},
+                    "30m": {"best": [...], "worst": [...]},
+                    "1H": {"best": [...], "worst": [...]},
+                    "4H": {"best": [...], "worst": [...]},
+                    "12H": {"best": [...], "worst": [...]},
+                    "1D": {"best": [...], "worst": [...]}
+                }
+            }
+        }
         """
         try:
-            logger.info(f"POST /api/market-analysis/analyze?timeframe={timeframe} - Generating fresh analysis")
-            analysis = await self.service.analyze_market(timeframe)
+            logger.info("POST /api/market-analysis/analyze - Generating analysis for ALL timeframes")
 
-            # Save to database using UPSERT (updates existing record)
-            analysis_dict = analysis.model_dump()
-            await self.service.market_repository.insert_analysis(analysis_dict)
-            logger.info(f"Fresh analysis upserted to database for {timeframe}")
+            # Generate analysis for all timeframes
+            analysis = await self.service.analyze_all_timeframes()
 
-            return MarketAnalysisResponse(
-                status="success",
-                message=f"Market analysis completed for {timeframe}",
-                data=analysis
+            # Save to both databases
+            analysis_dict = await self.service.save_analysis(analysis)
+            logger.info("Analysis saved to both databases")
+
+            # Return with new format using JSONResponse
+            return JSONResponse(
+                content={
+                    "success": True,
+                    "data": analysis_dict
+                },
+                status_code=200
             )
 
         except Exception as e:
             logger.error(f"Error in analyze_now endpoint: {e}")
-            return MarketAnalysisResponse(
-                status="error",
-                message=str(e),
-                data=None
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "data": {"error": str(e), "status": 500}
+                },
+                status_code=500
             )
 
 market_analysis_controller = MarketAnalysisController()

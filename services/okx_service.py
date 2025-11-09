@@ -32,8 +32,10 @@ class OKXService:
             '15m': '15m',
             '30m': '30m',
             '1h': '1H',
+            '4h': '4H',    # Nuevo timeframe
             '12h': '12H',
-            '24h': '1D'
+            '1d': '1D',    # Cambiado de 24h a 1d
+            '24h': '1D'    # Mantener compatibilidad con codigo antiguo
         }
 
     def _build_instrument_id(self, symbol: str) -> str:

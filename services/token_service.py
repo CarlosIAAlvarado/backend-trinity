@@ -98,11 +98,26 @@ class TokenService:
 
             # Process and filter tokens
             tokens = []
+            stablecoin_threshold = 0.05  # ±5% del precio de $1 (rango: $0.95 - $1.05)
+            excluded_stablecoins = 0
+
             for coin in listings:
                 quote = coin.get('quote', {}).get(currency, {})
                 market_cap = quote.get('market_cap', 0)
+                price = quote.get('price', 0)
 
+                # Filter 1: Market cap must meet minimum
                 if market_cap < min_market_cap:
+                    continue
+
+                # Filter 2: Exclude stablecoins (tokens with price near $1)
+                # This filters out USDT, USDC, DAI, BUSD, PYUSD, USD1, etc.
+                if price and abs(price - 1.0) <= stablecoin_threshold:
+                    # Color rojo para stablecoins excluidas
+                    RED = '\033[91m'
+                    RESET = '\033[0m'
+                    logger.info(f"{RED}[EXCLUDED STABLECOIN] {coin['symbol']} - Price: ${price:.4f}, Market Cap: ${market_cap:,.0f}{RESET}")
+                    excluded_stablecoins += 1
                     continue
 
                 token_data = {
@@ -110,7 +125,7 @@ class TokenService:
                     "name": coin['name'],
                     "cmcId": coin['id'],
                     "marketCap": market_cap,
-                    "price": quote.get('price'),
+                    "price": price,
                     "cmcRank": coin.get('cmc_rank'),
                     "exchanges": [],
                     "isOnOKX": False,
@@ -118,6 +133,14 @@ class TokenService:
                 }
 
                 tokens.append(token_data)
+
+            # Log filtering results with color
+            if excluded_stablecoins > 0:
+                # Colores ANSI: Amarillo brillante para destacar
+                YELLOW = '\033[93m'
+                BOLD = '\033[1m'
+                RESET = '\033[0m'
+                logger.info(f"{YELLOW}{BOLD}[STABLECOINS FILTERED] Total: {excluded_stablecoins} tokens excluded (price within ±5% of $1){RESET}")
 
             # Sort by market cap
             tokens.sort(key=lambda x: x['marketCap'], reverse=True)

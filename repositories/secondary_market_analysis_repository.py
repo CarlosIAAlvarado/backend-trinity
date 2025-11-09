@@ -63,11 +63,10 @@ class SecondaryMarketAnalysisRepository:
 
     async def _insert_analysis(self, analysis_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Internal method to insert or update market analysis record (UPSERT)
+        Internal method to insert or update market analysis record
 
-        Uses upsert to ensure only ONE document per timeframe exists.
-        If document exists for the timeframe, it updates it.
-        If not, it creates a new one.
+        NEW VERSION: Uses a single document for ALL timeframes.
+        The document contains nested timeframe data in candlesByTimeframe.
 
         Args:
             analysis_data: Dictionary containing market analysis data
@@ -78,16 +77,12 @@ class SecondaryMarketAnalysisRepository:
         try:
             collection = secondary_db_config.get_collection(self.collection_name)
 
-            timeframe = analysis_data.get('timeframe')
-            if not timeframe:
-                raise ValueError("timeframe is required in analysis_data")
-
             # Set timestamps
             current_time = datetime.now()
             analysis_data['updatedAt'] = current_time
 
-            # Check if document exists to determine if this is create or update
-            existing = await collection.find_one({'timeframe': timeframe})
+            # Check if any document exists
+            existing = await collection.find_one({})
 
             if not existing:
                 # First time: set createdAt
@@ -98,21 +93,19 @@ class SecondaryMarketAnalysisRepository:
                 analysis_data['createdAt'] = existing.get('createdAt', current_time)
                 action = "updated"
 
-            # Upsert: update if exists, insert if not
-            result = await collection.update_one(
-                {'timeframe': timeframe},  # Filter by timeframe
-                {'$set': analysis_data},   # Update/set all fields
-                upsert=True                # Create if doesn't exist
-            )
+            # Delete all existing documents and insert the new one
+            # This ensures we only have ONE document with ALL timeframes
+            await collection.delete_many({})
+            result = await collection.insert_one(analysis_data)
 
+            direction = analysis_data.get('direction', 'UNKNOWN')
             logger.info(
-                f"[SECONDARY DB] Market analysis {action} [{timeframe}]: "
-                f"{analysis_data['market_status']} -> trinity_performance_marketAnalysis"
+                f"[SECONDARY DB] Market analysis {action}: "
+                f"{direction} -> trinity_performance_marketAnalysis"
             )
 
             return {
-                'modified_count': result.modified_count,
-                'upserted_id': str(result.upserted_id) if result.upserted_id else None,
+                'inserted_id': str(result.inserted_id),
                 'status': 'success',
                 'action': action
             }
