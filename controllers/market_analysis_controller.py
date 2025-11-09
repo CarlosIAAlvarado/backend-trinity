@@ -19,11 +19,78 @@ class MarketAnalysisController:
     def _setup_routes(self):
         """Setup API routes"""
         self.router.add_api_route(
+            "/all",
+            self.get_all_timeframes,
+            methods=["GET"],
+            summary="Get latest analysis for all timeframes"
+        )
+        self.router.add_api_route(
             "/analyze",
             self.analyze_now,
             methods=["POST"],
             summary="Analyze all timeframes and return nested structure"
         )
+
+    async def get_all_timeframes(self):
+        """
+        GET endpoint to retrieve the latest analysis for ALL timeframes
+        Returns the most recent analysis document from the database
+
+        Response structure:
+        {
+            "success": true,
+            "data": {
+                "direction": "SHORT" | "FLAT" | "LONG",
+                "directionNumber": 0 | 0.5 | 1,
+                "directionNumberReal": 0.0-1.0,
+                "candlesByTimeframe": {
+                    "15m": {"best": [...], "worst": [...]},
+                    "30m": {"best": [...], "worst": [...]},
+                    "1H": {"best": [...], "worst": [...]},
+                    "4H": {"best": [...], "worst": [...]},
+                    "12H": {"best": [...], "worst": [...]},
+                    "1D": {"best": [...], "worst": [...]}
+                },
+                "timestamp": "...",
+                "updatedAt": "..."
+            }
+        }
+        """
+        try:
+            logger.info("GET /api/market-analysis/all - Retrieving latest analysis")
+
+            # Get latest analysis from database
+            analysis = await self.service.get_latest_analysis()
+
+            if not analysis:
+                logger.warning("No analysis found in database")
+                return JSONResponse(
+                    content={
+                        "success": False,
+                        "message": "No analysis found",
+                        "data": None
+                    },
+                    status_code=404
+                )
+
+            return JSONResponse(
+                content={
+                    "success": True,
+                    "data": analysis
+                },
+                status_code=200
+            )
+
+        except Exception as e:
+            logger.error(f"Error in get_all_timeframes endpoint: {e}")
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "message": str(e),
+                    "data": None
+                },
+                status_code=500
+            )
 
     async def analyze_now(self):
         """

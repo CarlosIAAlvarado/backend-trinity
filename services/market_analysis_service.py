@@ -231,6 +231,32 @@ class MarketAnalysisService:
             logger.error(f"Error saving market analysis: {e}")
             raise
 
+    async def get_latest_analysis(self) -> Dict[str, Any]:
+        """
+        Get the latest market analysis from the database
+        Returns the most recent analysis document
+        """
+        try:
+            logger.info("[MARKET ANALYSIS] Fetching latest analysis from database...")
+
+            # Get latest analysis from primary database
+            analysis = await self.market_repository.get_latest_analysis()
+
+            if not analysis:
+                logger.warning("No analysis found in database")
+                return None
+
+            # Serialize datetime objects for JSON response
+            json_safe_dict = self._serialize_for_json(analysis)
+
+            logger.info(f"[MARKET ANALYSIS] Latest analysis retrieved: {json_safe_dict.get('direction', 'Unknown')}")
+
+            return json_safe_dict
+
+        except Exception as e:
+            logger.error(f"Error getting latest analysis: {e}")
+            raise
+
     async def analyze_and_save(self) -> Dict[str, Any]:
         """
         Analyze all timeframes and save to both databases
