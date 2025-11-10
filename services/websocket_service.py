@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Dict, Any, Optional, List
 import socketio
 from config.database import db_config
+from repositories.secondary_config_repository import SecondaryConfigRepository
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +14,7 @@ class WebSocketService:
     """
     Service for WebSocket communication and global configuration
     Manages real-time updates and multi-user synchronization
+    Writes to PRIMARY and SECONDARY databases
     """
 
     def __init__(self):
@@ -23,6 +25,7 @@ class WebSocketService:
             engineio_logger=False
         )
         self.config_collection_name = 'global_config'
+        self.secondary_config_repository = SecondaryConfigRepository()
         self._setup_events()
 
     def _setup_events(self):
@@ -118,6 +121,7 @@ class WebSocketService:
     async def update_market_cap_filter(self, new_market_cap: int, condition: str = 'greater') -> Dict[str, Any]:
         """Update market cap filter configuration with condition"""
         try:
+            # Update in PRIMARY database
             collection = db_config.get_collection(self.config_collection_name)
 
             await collection.update_one(
@@ -132,13 +136,27 @@ class WebSocketService:
                 upsert=True
             )
 
-            # Get updated config
+            logger.info(f"[PRIMARY DB] Market cap filter changed to: ${new_market_cap:,} ({condition})")
+
+            # Get full config from PRIMARY to sync to SECONDARY
             updated_config = await self.get_global_config()
+
+            # Update in SECONDARY database (send complete config structure)
+            try:
+                config_data = {
+                    'market_cap_filter': updated_config.get('market_cap_filter'),
+                    'filter_condition': updated_config.get('filter_condition'),
+                    'update_interval_hours': updated_config.get('update_interval_hours'),
+                    'api_error': updated_config.get('api_error')
+                }
+                await self.secondary_config_repository.upsert_config_with_retry(config_data)
+                logger.info(f"[SECONDARY DB] Config synced successfully")
+            except Exception as e:
+                logger.error(f"[SECONDARY DB] Failed to sync config: {e}")
 
             # Broadcast to all connected clients
             await self.sio.emit('config_update', updated_config)
 
-            logger.info(f"[CONFIG UPDATE] Market cap filter changed to: ${new_market_cap:,} ({condition})")
             logger.info(f"[WEBSOCKET] Broadcasted update to all clients")
 
             return updated_config
@@ -149,11 +167,54 @@ class WebSocketService:
 
     async def update_interval(self, new_interval: int) -> Dict[str, Any]:
         """Update update interval configuration"""
-        return await self.update_global_config('update_interval_hours', new_interval)
+        try:
+            # Update in PRIMARY database
+            collection = db_config.get_collection(self.config_collection_name)
+
+            await collection.update_one(
+                {'type': 'app_config'},
+                {
+                    '$set': {
+                        'update_interval_hours': new_interval,
+                        'last_updated': datetime.now()
+                    }
+                },
+                upsert=True
+            )
+
+            logger.info(f"[PRIMARY DB] Update interval changed to: {new_interval} hours")
+
+            # Get full config from PRIMARY to sync to SECONDARY
+            updated_config = await self.get_global_config()
+
+            # Update in SECONDARY database (send complete config structure)
+            try:
+                config_data = {
+                    'market_cap_filter': updated_config.get('market_cap_filter'),
+                    'filter_condition': updated_config.get('filter_condition'),
+                    'update_interval_hours': updated_config.get('update_interval_hours'),
+                    'api_error': updated_config.get('api_error')
+                }
+                await self.secondary_config_repository.upsert_config_with_retry(config_data)
+                logger.info(f"[SECONDARY DB] Config synced successfully")
+            except Exception as e:
+                logger.error(f"[SECONDARY DB] Failed to sync config: {e}")
+
+            # Broadcast to all connected clients
+            await self.sio.emit('config_update', updated_config)
+
+            logger.info(f"[WEBSOCKET] Broadcasted update to all clients")
+
+            return updated_config
+
+        except Exception as e:
+            logger.error(f"Error updating interval: {e}")
+            raise
 
     async def update_api_error(self, error_message: Optional[str]) -> Dict[str, Any]:
         """Update API error status in global configuration"""
         try:
+            # Update in PRIMARY database
             collection = db_config.get_collection(self.config_collection_name)
 
             await collection.update_one(
@@ -167,8 +228,21 @@ class WebSocketService:
                 upsert=True
             )
 
-            # Get updated config
+            # Get full config from PRIMARY to sync to SECONDARY
             updated_config = await self.get_global_config()
+
+            # Update in SECONDARY database (send complete config structure)
+            try:
+                config_data = {
+                    'market_cap_filter': updated_config.get('market_cap_filter'),
+                    'filter_condition': updated_config.get('filter_condition'),
+                    'update_interval_hours': updated_config.get('update_interval_hours'),
+                    'api_error': updated_config.get('api_error')
+                }
+                await self.secondary_config_repository.upsert_config_with_retry(config_data)
+                logger.info(f"[SECONDARY DB] Config synced successfully")
+            except Exception as e:
+                logger.error(f"[SECONDARY DB] Failed to sync config: {e}")
 
             # Broadcast to all connected clients
             await self.sio.emit('config_update', updated_config)

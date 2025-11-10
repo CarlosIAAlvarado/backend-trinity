@@ -5,6 +5,7 @@ import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from repositories.token_repository import TokenRepository
+from repositories.secondary_token_repository import SecondaryTokenRepository
 from services.coinmarketcap_service import CoinMarketCapService
 from models.token_model import TokenModel, TokenResponse
 from services.websocket_service import websocket_service
@@ -15,10 +16,12 @@ class TokenService:
     """
     Business logic service for token operations
     Follows Dependency Inversion Principle
+    Writes to PRIMARY and SECONDARY databases
     """
 
     def __init__(self):
         self.repository = TokenRepository()
+        self.secondary_repository = SecondaryTokenRepository()
         self.cmc_service = CoinMarketCapService()
         self.cache_time = 5 * 60  # 5 minutes in seconds
         self.batch_size = 5
@@ -151,8 +154,18 @@ class TokenService:
 
             # Save to database if refreshing
             if refresh and tokens:
+                # Save to PRIMARY database
                 result = await self.repository.upsert_many(tokens)
-                logger.info(f"Database upsert: {result['inserted']} inserted, {result['modified']} modified")
+                logger.info(f"[PRIMARY DB] Token upsert: {result['inserted']} inserted, {result['modified']} modified")
+
+                # Save to SECONDARY database (with retry logic)
+                try:
+                    secondary_result = await self.secondary_repository.bulk_upsert_tokens_with_retry(tokens)
+                    if secondary_result['status'] == 'success':
+                        logger.info(f"[SECONDARY DB] Tokens synced successfully")
+                except Exception as e:
+                    logger.error(f"[SECONDARY DB] Failed to sync tokens: {e}")
+                    # Don't raise, continue with primary DB operation
 
                 # Cleanup tokens that don't meet criteria anymore
                 deleted_count = await self._cleanup_old_tokens(min_market_cap, limit)

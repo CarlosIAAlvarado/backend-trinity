@@ -4,6 +4,7 @@ from typing import List, Dict, Any
 from datetime import datetime
 from config.database import db_config
 from repositories.candle_repository import CandleRepository
+from repositories.secondary_candle_repository import SecondaryCandleRepository
 from repositories.token_repository import TokenRepository
 from services.okx_service import OKXService
 from services.websocket_service import websocket_service
@@ -16,10 +17,12 @@ class CandlestickService:
     """
     Business logic service for candlestick operations
     Orchestrates OKX API calls and database operations
+    Writes to PRIMARY and SECONDARY databases
     """
 
     def __init__(self):
         self.candle_repository = CandleRepository()
+        self.secondary_candle_repository = SecondaryCandleRepository()
         self.token_repository = TokenRepository()
         self.okx_service = OKXService()
         self.failed_token_service = FailedTokenService()
@@ -107,8 +110,24 @@ class CandlestickService:
             # STEP 4A: UPSERT all candles (update existing, insert new)
             logger.info("STEP 4A: Upserting candlesticks into database...")
             if all_candles:
+                # Save to PRIMARY database
                 upserted_count = await self.candle_repository.upsert_many(all_candles)
-                logger.info(f"Successfully upserted {upserted_count} candlesticks")
+                logger.info(f"[PRIMARY DB] Successfully upserted {upserted_count} candlesticks")
+
+                # Save to SECONDARY database (with retry logic)
+                logger.info(f"[SECONDARY DB] Attempting to sync {len(all_candles)} candles...")
+                try:
+                    secondary_result = await self.secondary_candle_repository.bulk_upsert_candles_with_retry(all_candles)
+                    logger.info(f"[SECONDARY DB] Sync result: {secondary_result}")
+                    if secondary_result['status'] == 'success':
+                        logger.info(f"[SECONDARY DB] Candles synced successfully")
+                    else:
+                        logger.error(f"[SECONDARY DB] Sync failed with status: {secondary_result.get('status')}")
+                except Exception as e:
+                    logger.error(f"[SECONDARY DB] Exception during sync: {e}")
+                    import traceback
+                    logger.error(f"[SECONDARY DB] Traceback: {traceback.format_exc()}")
+                    # Don't raise, continue with primary DB operation
             else:
                 upserted_count = 0
                 logger.warning("No candlesticks to upsert")
@@ -269,8 +288,17 @@ class CandlestickService:
             )
 
             if all_candles:
+                # Save to PRIMARY database
                 updated_count = await self.candle_repository.upsert_many(all_candles)
-                logger.info(f"Successfully updated {updated_count} candles for timeframe {timeframe}")
+                logger.info(f"[PRIMARY DB] Successfully updated {updated_count} candles for timeframe {timeframe}")
+
+                # Save to SECONDARY database (with retry logic)
+                try:
+                    secondary_result = await self.secondary_candle_repository.bulk_upsert_candles_with_retry(all_candles)
+                    if secondary_result['status'] == 'success':
+                        logger.info(f"[SECONDARY DB] Candles synced for timeframe {timeframe}")
+                except Exception as e:
+                    logger.error(f"[SECONDARY DB] Failed to sync candles for timeframe {timeframe}: {e}")
 
                 # Emit update notification to frontend
                 await websocket_service.emit_candlesticks_updated({
@@ -333,8 +361,15 @@ class CandlestickService:
             })
 
             if not candle_bd:
-                # No existe en BD, hacer upsert completo
+                # No existe en BD, hacer upsert completo en PRIMARY
                 await self.candle_repository.upsert_candle(candle_okx)
+
+                # Sync to SECONDARY database
+                try:
+                    await self.secondary_candle_repository.bulk_upsert_candles_with_retry([candle_okx])
+                except Exception as e:
+                    logger.error(f"[SECONDARY DB] Failed to sync new candle {symbol} {timeframe}: {e}")
+
                 return True
 
             # Comparar openTimestamp para detectar si es nueva vela
@@ -343,8 +378,15 @@ class CandlestickService:
 
             if okx_open_ts != bd_open_ts:
                 # NUEVA VELA: La vela cerró y OKX tiene una nueva
-                # Actualizar TODO incluyendo open, openTimestamp, closeTimestamp
+                # Actualizar TODO incluyendo open, openTimestamp, closeTimestamp en PRIMARY
                 await self.candle_repository.upsert_candle(candle_okx)
+
+                # Sync to SECONDARY database
+                try:
+                    await self.secondary_candle_repository.bulk_upsert_candles_with_retry([candle_okx])
+                except Exception as e:
+                    logger.error(f"[SECONDARY DB] Failed to sync updated candle {symbol} {timeframe}: {e}")
+
                 return True
             else:
                 # MISMA VELA: Solo actualizar precios intermedios
@@ -487,7 +529,17 @@ class CandlestickService:
                     'updated_count': 0
                 }
 
+            # Save to PRIMARY database
             result = await self.candle_repository.upsert_many(candles)
+            logger.info(f"[PRIMARY DB] Updated {len(candles)} candles for {symbol}")
+
+            # Save to SECONDARY database (with retry logic)
+            try:
+                secondary_result = await self.secondary_candle_repository.bulk_upsert_candles_with_retry(candles)
+                if secondary_result['status'] == 'success':
+                    logger.info(f"[SECONDARY DB] Candles synced for {symbol}")
+            except Exception as e:
+                logger.error(f"[SECONDARY DB] Failed to sync candles for {symbol}: {e}")
 
             return {
                 'status': 'success',

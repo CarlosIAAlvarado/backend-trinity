@@ -2,6 +2,7 @@ import logging
 from typing import List, Dict, Any
 from datetime import datetime
 from repositories.failed_token_repository import FailedTokenRepository
+from repositories.secondary_failed_token_repository import SecondaryFailedTokenRepository
 from models.failed_token_model import FailedTokenModel, FailedTokenResponse, FailedTokenStats
 
 logger = logging.getLogger(__name__)
@@ -14,6 +15,7 @@ class FailedTokenService:
 
     def __init__(self):
         self.failed_token_repository = FailedTokenRepository()
+        self.secondary_failed_token_repository = SecondaryFailedTokenRepository()
 
     async def clear_history(self) -> int:
         """
@@ -21,8 +23,18 @@ class FailedTokenService:
         Used before fresh update to ensure clean historical data
         """
         try:
+            # Clear from PRIMARY database
             deleted_count = await self.failed_token_repository.delete_all()
-            logger.info(f"Cleared failed tokens history: {deleted_count} records removed")
+            logger.info(f"[PRIMARY DB] Cleared failed tokens history: {deleted_count} records removed")
+
+            # Clear from SECONDARY database (with retry logic)
+            try:
+                secondary_result = await self.secondary_failed_token_repository.delete_all_with_retry()
+                if secondary_result['status'] == 'success':
+                    logger.info(f"[SECONDARY DB] Cleared {secondary_result['deleted_count']} failed tokens from secondary DB")
+            except Exception as e:
+                logger.error(f"[SECONDARY DB] Failed to clear failed tokens from secondary DB: {e}")
+
             return deleted_count
         except Exception as e:
             logger.error(f"Error clearing failed tokens history: {e}")
@@ -50,10 +62,17 @@ class FailedTokenService:
                     'count': 0
                 }
 
-            # Insert all failed tokens
+            # Insert all failed tokens to PRIMARY database
             inserted_count = await self.failed_token_repository.insert_many(failed_tokens_data)
+            logger.info(f"[PRIMARY DB] Successfully recorded {inserted_count} failed tokens")
 
-            logger.info(f"Successfully recorded {inserted_count} failed tokens")
+            # Sync to SECONDARY database (with retry logic)
+            try:
+                secondary_result = await self.secondary_failed_token_repository.bulk_upsert_failed_tokens_with_retry(failed_tokens_data)
+                if secondary_result['status'] == 'success':
+                    logger.info(f"[SECONDARY DB] Failed tokens synced successfully")
+            except Exception as e:
+                logger.error(f"[SECONDARY DB] Failed to sync failed tokens: {e}")
 
             return {
                 'status': 'success',
@@ -119,14 +138,32 @@ class FailedTokenService:
             # Step 3: Remove tokens that are now available in OKX
             deleted_count = 0
             if successful_symbols:
+                # Delete from PRIMARY database
                 deleted_count = await self.failed_token_repository.delete_by_symbols(successful_symbols)
-                logger.info(f"Removed {deleted_count} tokens that are now available in OKX")
+                logger.info(f"[PRIMARY DB] Removed {deleted_count} tokens that are now available in OKX")
+
+                # Delete from SECONDARY database (with retry logic)
+                try:
+                    secondary_result = await self.secondary_failed_token_repository.delete_by_symbols_with_retry(successful_symbols)
+                    if secondary_result['status'] == 'success':
+                        logger.info(f"[SECONDARY DB] Removed {secondary_result['deleted_count']} tokens from secondary DB")
+                except Exception as e:
+                    logger.error(f"[SECONDARY DB] Failed to remove tokens from secondary DB: {e}")
 
             # Step 4: Add or update failed tokens
             upserted_count = 0
             if failed_tokens_data:
+                # Upsert to PRIMARY database
                 upserted_count = await self.failed_token_repository.upsert_many(failed_tokens_data)
-                logger.info(f"Upserted {upserted_count} failed tokens")
+                logger.info(f"[PRIMARY DB] Upserted {upserted_count} failed tokens")
+
+                # Sync to SECONDARY database (with retry logic)
+                try:
+                    secondary_result = await self.secondary_failed_token_repository.bulk_upsert_failed_tokens_with_retry(failed_tokens_data)
+                    if secondary_result['status'] == 'success':
+                        logger.info(f"[SECONDARY DB] Failed tokens synced successfully")
+                except Exception as e:
+                    logger.error(f"[SECONDARY DB] Failed to sync failed tokens: {e}")
 
             return {
                 'status': 'success',

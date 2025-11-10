@@ -2,6 +2,7 @@ import logging
 from typing import List, Dict, Any
 from datetime import datetime
 from repositories.notification_repository import NotificationRepository
+from repositories.secondary_notification_repository import SecondaryNotificationRepository
 from models.notification_model import NotificationModel, NotificationResponse
 
 logger = logging.getLogger(__name__)
@@ -10,10 +11,12 @@ class NotificationService:
     """
     Business logic service for notification operations
     Manages system notifications for users
+    Writes to PRIMARY and SECONDARY databases
     """
 
     def __init__(self):
         self.notification_repository = NotificationRepository()
+        self.secondary_notification_repository = SecondaryNotificationRepository()
 
     async def create_token_available_notification(
         self,
@@ -46,8 +49,18 @@ class NotificationService:
                 'timestamp': datetime.now()
             }
 
+            # Save to PRIMARY database
             notification = await self.notification_repository.insert_one(notification_data)
-            logger.info(f"Created token_available notification for {symbol}")
+            logger.info(f"[PRIMARY DB] Created token_available notification for {symbol}")
+
+            # Save to SECONDARY database (with retry logic)
+            try:
+                secondary_result = await self.secondary_notification_repository.insert_notification_with_retry(notification_data)
+                if secondary_result['status'] == 'success':
+                    logger.info(f"[SECONDARY DB] Notification synced successfully")
+            except Exception as e:
+                logger.error(f"[SECONDARY DB] Failed to sync notification: {e}")
+                # Don't raise, continue with primary DB operation
 
             # Emit WebSocket event for real-time notification
             from services.websocket_service import websocket_service
@@ -203,7 +216,16 @@ class NotificationService:
             Success status
         """
         try:
+            # Mark in PRIMARY database
             success = await self.notification_repository.mark_as_read(notification_id)
+
+            # Mark in SECONDARY database (with retry logic)
+            if success:
+                try:
+                    await self.secondary_notification_repository.mark_as_read_with_retry(notification_id)
+                    logger.info(f"[SECONDARY DB] Notification marked as read")
+                except Exception as e:
+                    logger.error(f"[SECONDARY DB] Failed to mark notification as read: {e}")
 
             return {
                 'status': 'success' if success else 'error',
