@@ -3,17 +3,19 @@ from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field, ConfigDict
 
 class TopPerformer(BaseModel):
-    """Model for top/worst performing tokens"""
+    """Model for top/worst performing tokens (DEPRECATED - kept for backward compatibility)"""
     symbol: str
     name: str
     avg_performance: float
 
 class TimeframeAnalysis(BaseModel):
     """Analysis data for a specific timeframe"""
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra='allow')
 
-    best: List[TopPerformer] = Field(default=[], description="Best performing tokens")
-    worst: List[TopPerformer] = Field(default=[], description="Worst performing tokens")
+    # Accept lists of ANY dictionary (complete candle objects)
+    # This allows storing full candle data: _id, symbol, timeframe, open, high, low, close, volume, timestamp, performance, etc.
+    best: List[Dict[str, Any]] = Field(default=[], description="Best performing tokens with full candle data")
+    worst: List[Dict[str, Any]] = Field(default=[], description="Worst performing tokens with full candle data")
 
 class CandlesByTimeframe(BaseModel):
     """Container for all timeframe analyses"""

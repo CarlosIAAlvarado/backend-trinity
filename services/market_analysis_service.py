@@ -61,38 +61,76 @@ class MarketAnalysisService:
 
                 for candle in candles:
                     performance = candle.get('performance', 0)
-                    token_data.append({
-                        'symbol': candle['symbol'],
-                        'name': candle.get('name', candle['symbol']),
-                        'performance': round(performance, 2)
-                    })
+
+                    # Store the COMPLETE candle object (not just symbol, name, performance)
+                    # Need to serialize MongoDB ObjectId to string
+                    candle_copy = dict(candle)
+
+                    # Convert ObjectId to string if present
+                    if '_id' in candle_copy:
+                        from bson import ObjectId
+                        if isinstance(candle_copy['_id'], ObjectId):
+                            candle_copy['_id'] = str(candle_copy['_id'])
+
+                    # Convert datetime objects to ISO format strings
+                    for key, value in candle_copy.items():
+                        if isinstance(value, datetime):
+                            candle_copy[key] = value.isoformat()
+
+                    # Replace 'performance' with 'rendimiento' (NEW structure)
+                    # Remove old 'performance' field if it exists
+                    if 'performance' in candle_copy:
+                        del candle_copy['performance']
+
+                    # Remove 'name' field (redundant, not needed in new structure)
+                    if 'name' in candle_copy:
+                        del candle_copy['name']
+
+                    # Remove 'openTimestamp' field (use 'timestamp' instead)
+                    # Save openTimestamp value before deletion for timestamp fallback
+                    open_timestamp_value = candle_copy.get('openTimestamp')
+                    if 'openTimestamp' in candle_copy:
+                        del candle_copy['openTimestamp']
+
+                    # Remove 'closeTimestamp' field (not needed in new structure)
+                    if 'closeTimestamp' in candle_copy:
+                        del candle_copy['closeTimestamp']
+
+                    # Use 'rendimiento' instead (full precision)
+                    candle_copy['rendimiento'] = performance
+
+                    # Add volume if not present (default to 0)
+                    if 'volume' not in candle_copy:
+                        candle_copy['volume'] = 0
+
+                    # Add timestamp if not present (use openTimestamp value as fallback)
+                    if 'timestamp' not in candle_copy and open_timestamp_value:
+                        candle_copy['timestamp'] = open_timestamp_value
+
+                    # Add __v if not present (Mongoose version key, default to 0)
+                    if '__v' not in candle_copy:
+                        candle_copy['__v'] = 0
+
+                    token_data.append(candle_copy)
 
                     if performance > 0:
                         bullish += 1
                     elif performance < 0:
                         bearish += 1
 
-                # Sort by performance
-                token_data.sort(key=lambda x: x['performance'], reverse=True)
+                # Sort by rendimiento (performance)
+                token_data.sort(key=lambda x: x['rendimiento'], reverse=True)
 
-                # Get best and worst performers
-                best_performers = [
-                    TopPerformer(
-                        symbol=t['symbol'],
-                        name=t['name'],
-                        avg_performance=t['performance']
-                    )
-                    for t in token_data[:10]  # Top 10
-                ]
+                # Get best and worst performers (now with FULL candle data)
+                best_performers = token_data[:10]  # Top 10 with complete candle data
+                worst_performers = token_data[-10:]  # Worst 10 with complete candle data
 
-                worst_performers = [
-                    TopPerformer(
-                        symbol=t['symbol'],
-                        name=t['name'],
-                        avg_performance=t['performance']
-                    )
-                    for t in token_data[-10:]  # Worst 10
-                ]
+                # Add position to each group separately (1-indexed ranking)
+                for index, token in enumerate(best_performers, start=1):
+                    token['position'] = index
+
+                for index, token in enumerate(worst_performers, start=1):
+                    token['position'] = index
 
                 # Create TimeframeAnalysis
                 timeframe_analyses[timeframe] = TimeframeAnalysis(
